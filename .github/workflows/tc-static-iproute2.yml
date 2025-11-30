@@ -1,6 +1,5 @@
 name: CI with Static TC Build
 
-# Controls when the action will run. 
 on: 
   push:
   pull_request:
@@ -16,7 +15,7 @@ on:
 jobs:
   build:
     name: build
-    runs-on: ubuntu-latest # 使用 ubuntu-latest 確保有最新的環境
+    runs-on: ubuntu-latest
     if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
     env:
       build_variant: ${{ matrix.build_variant }}
@@ -38,19 +37,12 @@ jobs:
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget
           
       # -----------------------------------------------------------
-      # ❌ 移除 Run shellcheck (避免路徑錯誤)
-      # ❌ 移除 Prepare toolchain (因為您沒有該資料夾)
-      # -----------------------------------------------------------
-
-      # -----------------------------------------------------------
-      # ✅ 步驟 1: 下載並設定 MIPS 交叉編譯器 (核心修復)
+      # ✅ 步驟 1: 下載並設定 MIPS 交叉編譯器 (已修正路徑搜尋)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         run: |
-          # 1. 定義 OpenWrt SDK 版本和檔案名 (適用於 MT7621)
-          # ⚠️ 注意: 現代 OpenWrt SDK 使用 musl 而非 uClibc，但對於靜態編譯的相容性很高。
+          # 1. 定義 OpenWrt SDK 資訊
           TOOLCHAIN_VERSION="23.05.2" 
-          TOOLCHAIN_ARCH="mipsel-openwrt-linux-musl"
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
           echo "正在下載 OpenWrt SDK..."
@@ -58,33 +50,43 @@ jobs:
           
           echo "解壓工具鏈..."
           mkdir -p sdk
-          # --strip-components=1 確保解壓後目錄結構乾淨
+          # --strip-components=1 確保解壓後目錄結構位於 sdk/ 下
           tar -xf sdk.tar.xz -C sdk --strip-components=1
 
-          # 2. 設定環境變數
-          SDK_ROOT=$(pwd)/sdk
-          TOOLCHAIN_BIN="${SDK_ROOT}/staging_dir/toolchain-${TOOLCHAIN_ARCH}/bin"
+          # 2. 穩健地尋找工具鏈的 bin 目錄 (修正點)
+          # 尋找 sdk/staging_dir 內第一個 bin 資料夾
+          TOOLCHAIN_BIN=$(find sdk/staging_dir -type d -name "bin" | head -n 1)
           
-          # 設定交叉編譯器前綴
-          TOOLCHAIN_PREFIX="${TOOLCHAIN_ARCH}-" 
+          if [ -z "$TOOLCHAIN_BIN" ]; then
+            echo "::error::錯誤：無法找到工具鏈的 bin 目錄，請檢查 SDK 結構。"
+            exit 1
+          fi
+
+          # 3. 從 bin 目錄中確定完整的編譯器前綴 (修正點)
+          # 透過檢查實際的 gcc 執行檔名稱來確定完整前綴
+          FULL_PREFIX=$(ls $TOOLCHAIN_BIN/*gcc | head -n 1)
+          TOOLCHAIN_PREFIX=$(basename $FULL_PREFIX | sed 's/gcc$//')
           
-          # 3. 匯出 PATH 和 CROSS_COMPILE 到 GitHub 環境
+          echo "偵測到的工具鏈前綴為: ${TOOLCHAIN_PREFIX}"
+
+          # 4. 匯出 PATH 和 CROSS_COMPILE 到 GitHub 環境
           echo "PATH=$TOOLCHAIN_BIN:$PATH" >> $GITHUB_ENV
           echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
           echo "IPROUTE2_VERSION=6.7.0" >> $GITHUB_ENV 
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
           
           echo "驗證編譯器路徑..."
-          ${TOOLCHAIN_PREFIX}gcc --version
+          # 使用 which 確保編譯器在 PATH 中
+          which "${TOOLCHAIN_PREFIX}gcc"
+          "${TOOLCHAIN_PREFIX}gcc" --version
           
         shell: bash
         
       # -----------------------------------------------------------
-      # ✅ 步驟 2: 靜態編譯 TC
+      # ✅ 步驟 2: 靜態編譯 TC (使用已修正的 CROSS_COMPILE)
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
-          # 下載 iproute2 源碼
           wget https://mirrors.edge.kernel.org/pub/linux/utils/iproute2/iproute2-${{ env.IPROUTE2_VERSION }}.tar.xz
           tar -xf iproute2-${{ env.IPROUTE2_VERSION }}.tar.xz
           cd iproute2-${{ env.IPROUTE2_VERSION }}
@@ -109,12 +111,9 @@ jobs:
           name: tc_static_mipsel_${{ env.IPROUTE2_VERSION }}
           path: ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           retention-days: 90
-      # -----------------------------------------------------------
-      # 靜態編譯 TC 核心步驟結束
-      # -----------------------------------------------------------
       
       # -----------------------------------------------------------
-      # 步驟 3: 原有的韌體編譯流程 (假設 trunk 資料夾存在)
+      # 步驟 3: 原有的韌體編譯流程 (保持不變)
       # -----------------------------------------------------------
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
@@ -123,7 +122,6 @@ jobs:
           limit-access-to-actor: true
           
       - name: Start build
-        # ⚠️ 注意: 這裡假設 'trunk' 目錄是存在的，否則這裡會遇到另一個 'No such file or directory' 錯誤
         run: |
           cd trunk
           mkdir -p ${images_dir}
