@@ -1,0 +1,138 @@
+name: CI with Static TC Build
+
+# Controls when the action will run. 
+on: 
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'      
+        required: false
+        default: 'no'
+  release:
+    types: [published]
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-20.04
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
+    env:
+      build_variant: ${{ matrix.build_variant }}
+      targets: ${{ matrix.targets }}
+      images_dir: /opt/images
+    strategy:
+      matrix:
+        include:
+          - build_variant: "mt7621"
+            targets: "K2P"
+            
+    steps:
+      - uses: actions/checkout@v4 # 升級到 v4
+      
+      - name: Prepare environment
+        run: |
+          sudo apt update
+          # 安裝編譯 iproute2 所需的額外依賴
+          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget
+          
+      - name: Run shellcheck
+        run: sh ./trunk/tools/shellcheck.sh
+        
+      - name: Prepare toolchain
+        run: |
+          cd toolchain-mipsel
+          # 假設此腳本會將 MIPS uClibc 工具鏈安裝並設置在 PATH 中
+          sh dl_toolchain.sh
+          
+      # -----------------------------------------------------------
+      # 🚀 靜態編譯 TC 核心步驟開始
+      # -----------------------------------------------------------
+      - name: Define Cross-Compile Variables for TC
+        id: tc_vars
+        run: |
+          # ⚠️ 根據您的 dl_toolchain.sh 腳本的實際輸出，調整工具鏈前綴。
+          # 這裡使用常見的 mipsel-linux-uclibc- 作為範例。
+          TOOLCHAIN_PREFIX="mipsel-linux-uclibc-" 
+          IPROUTE2_VERSION="6.7.0" # iproute2 穩定版本
+          
+          echo "CROSS_COMPILE=${TOOLCHAIN_PREFIX}" >> $GITHUB_ENV
+          echo "IPROUTE2_VERSION=${IPROUTE2_VERSION}" >> $GITHUB_ENV 
+          echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Download and Statically Compile TC
+        run: |
+          # 下載 iproute2 源碼
+          wget https://mirrors.edge.kernel.org/pub/linux/utils/iproute2/iproute2-${{ env.IPROUTE2_VERSION }}.tar.xz
+          tar -xf iproute2-${{ env.IPROUTE2_VERSION }}.tar.xz
+          cd iproute2-${{ env.IPROUTE2_VERSION }}
+
+          # 執行編譯：
+          # 1. LDFLAGS="-static" 强制靜態連結 uClibc
+          # 2. SUBDIRS=tc 僅編譯 tc 程式及其依賴庫
+          make CC="${{ env.CROSS_COMPILE }}gcc" \
+               LDFLAGS="-static" \
+               AR="${{ env.CROSS_COMPILE }}ar" \
+               SUBDIRS=tc 
+          
+          # 複製編譯好的靜態執行檔
+          mkdir -p ${{ env.TC_STATIC_PATH }}
+          cp tc/tc ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
+          
+          echo "--- 靜態連結驗證結果 ---"
+          file ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
+        shell: bash
+
+      - name: Upload Static TC Binary as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tc_static_mipsel_${{ env.IPROUTE2_VERSION }}
+          path: ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
+          retention-days: 90
+      # -----------------------------------------------------------
+      # 靜態編譯 TC 核心步驟結束
+      # -----------------------------------------------------------
+      
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_enabled == 'yes' }}
+        with:
+          limit-access-to-actor: true
+          
+      - name: Start build
+        run: |
+          cd trunk
+          mkdir -p ${images_dir}
+          for m in $targets; do fakeroot ./build_firmware_ci $m; \
+          if [ $? = 0 ]; then cp -f images/*.trx ${images_dir}/$m.trx; else exit 1; fi; \
+          ./clear_tree_simple >/dev/null 2>&1; done
+          
+      - name: Create archive
+        if: ${{ github.event_name != 'release' && success() }}
+        run: |
+          ls -lh ${images_dir}
+          # 使用 7z
+          GIT_VERSION=`git rev-parse --short=7 HEAD 2>/dev/null` && [ -n "$GIT_VERSION" ] && \
+          image_name=images_${build_variant}_${GIT_VERSION} || image_name=images_${build_variant}
+          cd ${images_dir}; md5sum *.trx |tee md5sum.txt; 7z a -mx=9 ${image_name}.7z ./*
+          echo "image_name=${image_name}" >> $GITHUB_ENV
+          
+      - name: Upload images to Artifact
+        if: ${{ github.event_name != 'release' && success() }}
+        uses: actions/upload-artifact@v4 # 升級到 v4
+        with:
+          name: ${{ env.image_name }}
+          path: ${{ env.images_dir }}/*.7z
+          
+      - name: Upload images to Releases
+        if: ${{ github.event_name == 'release' && success() }}
+        uses: svenstaro/upload-release-action@2.2.0
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ env.images_dir }}/*.trx
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
