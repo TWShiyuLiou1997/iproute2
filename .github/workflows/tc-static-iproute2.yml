@@ -13,11 +13,10 @@ on:
   release:
     types: [published]
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   build:
     name: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # 使用 ubuntu-latest 確保有最新的環境
     if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
     env:
       build_variant: ${{ matrix.build_variant }}
@@ -35,34 +34,54 @@ jobs:
       - name: Prepare environment
         run: |
           sudo apt update
-          # 安裝編譯 iproute2 所需的額外依賴
+          # 安裝編譯 iproute2 所需的依賴
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget
           
-# 💡 已移除 Run shellcheck 步驟
-#      - name: Run shellcheck
-#        run: sh ./trunk/tools/shellcheck.sh
-        
-      - name: Prepare toolchain
-        run: |
-          cd toolchain-mipsel
-          # 假設此腳本會將 MIPS uClibc 工具鏈安裝並設置在 PATH 中
-          sh dl_toolchain.sh
-          
       # -----------------------------------------------------------
-      # 🚀 靜態編譯 TC 核心步驟開始
+      # ❌ 移除 Run shellcheck (避免路徑錯誤)
+      # ❌ 移除 Prepare toolchain (因為您沒有該資料夾)
       # -----------------------------------------------------------
-      - name: Define Cross-Compile Variables for TC
-        id: tc_vars
-        run: |
-          # ⚠️ 根據您的 dl_toolchain.sh 腳本的實際輸出，調整工具鏈前綴。
-          TOOLCHAIN_PREFIX="mipsel-linux-uclibc-" 
-          IPROUTE2_VERSION="6.7.0"
-          
-          echo "CROSS_COMPILE=${TOOLCHAIN_PREFIX}" >> $GITHUB_ENV
-          echo "IPROUTE2_VERSION=${IPROUTE2_VERSION}" >> $GITHUB_ENV 
-          echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
-        shell: bash
 
+      # -----------------------------------------------------------
+      # ✅ 步驟 1: 下載並設定 MIPS 交叉編譯器 (核心修復)
+      # -----------------------------------------------------------
+      - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
+        run: |
+          # 1. 定義 OpenWrt SDK 版本和檔案名 (適用於 MT7621)
+          # ⚠️ 注意: 現代 OpenWrt SDK 使用 musl 而非 uClibc，但對於靜態編譯的相容性很高。
+          TOOLCHAIN_VERSION="23.05.2" 
+          TOOLCHAIN_ARCH="mipsel-openwrt-linux-musl"
+          TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+          
+          echo "正在下載 OpenWrt SDK..."
+          wget "https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}" -O sdk.tar.xz
+          
+          echo "解壓工具鏈..."
+          mkdir -p sdk
+          # --strip-components=1 確保解壓後目錄結構乾淨
+          tar -xf sdk.tar.xz -C sdk --strip-components=1
+
+          # 2. 設定環境變數
+          SDK_ROOT=$(pwd)/sdk
+          TOOLCHAIN_BIN="${SDK_ROOT}/staging_dir/toolchain-${TOOLCHAIN_ARCH}/bin"
+          
+          # 設定交叉編譯器前綴
+          TOOLCHAIN_PREFIX="${TOOLCHAIN_ARCH}-" 
+          
+          # 3. 匯出 PATH 和 CROSS_COMPILE 到 GitHub 環境
+          echo "PATH=$TOOLCHAIN_BIN:$PATH" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
+          echo "IPROUTE2_VERSION=6.7.0" >> $GITHUB_ENV 
+          echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
+          
+          echo "驗證編譯器路徑..."
+          ${TOOLCHAIN_PREFIX}gcc --version
+          
+        shell: bash
+        
+      # -----------------------------------------------------------
+      # ✅ 步驟 2: 靜態編譯 TC
+      # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
           # 下載 iproute2 源碼
@@ -70,8 +89,7 @@ jobs:
           tar -xf iproute2-${{ env.IPROUTE2_VERSION }}.tar.xz
           cd iproute2-${{ env.IPROUTE2_VERSION }}
 
-          # 執行編譯：
-          # LDFLAGS="-static" 强制靜態連結 uClibc
+          # 執行編譯：使用 -static 參數強制靜態連結
           make CC="${{ env.CROSS_COMPILE }}gcc" \
                LDFLAGS="-static" \
                AR="${{ env.CROSS_COMPILE }}ar" \
@@ -95,6 +113,9 @@ jobs:
       # 靜態編譯 TC 核心步驟結束
       # -----------------------------------------------------------
       
+      # -----------------------------------------------------------
+      # 步驟 3: 原有的韌體編譯流程 (假設 trunk 資料夾存在)
+      # -----------------------------------------------------------
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_enabled == 'yes' }}
@@ -102,6 +123,7 @@ jobs:
           limit-access-to-actor: true
           
       - name: Start build
+        # ⚠️ 注意: 這裡假設 'trunk' 目錄是存在的，否則這裡會遇到另一個 'No such file or directory' 錯誤
         run: |
           cd trunk
           mkdir -p ${images_dir}
@@ -113,7 +135,6 @@ jobs:
         if: ${{ github.event_name != 'release' && success() }}
         run: |
           ls -lh ${images_dir}
-          # 使用 7z
           GIT_VERSION=`git rev-parse --short=7 HEAD 2>/dev/null` && [ -n "$GIT_VERSION" ] && \
           image_name=images_${build_variant}_${GIT_VERSION} || image_name=images_${build_variant}
           cd ${images_dir}; md5sum *.trx |tee md5sum.txt; 7z a -mx=9 ${image_name}.7z ./*
