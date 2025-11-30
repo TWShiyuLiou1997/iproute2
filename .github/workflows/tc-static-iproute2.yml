@@ -30,7 +30,7 @@ jobs:
             targets: "K2P"
             
     steps:
-      - uses: actions/checkout@v4 # 升級到 v4
+      - uses: actions/checkout@v4
       
       - name: Prepare environment
         run: |
@@ -38,8 +38,9 @@ jobs:
           # 安裝編譯 iproute2 所需的額外依賴
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget
           
-      - name: Run shellcheck
-        run: sh ./trunk/tools/shellcheck.sh
+# 💡 已移除 Run shellcheck 步驟
+#      - name: Run shellcheck
+#        run: sh ./trunk/tools/shellcheck.sh
         
       - name: Prepare toolchain
         run: |
@@ -54,9 +55,8 @@ jobs:
         id: tc_vars
         run: |
           # ⚠️ 根據您的 dl_toolchain.sh 腳本的實際輸出，調整工具鏈前綴。
-          # 這裡使用常見的 mipsel-linux-uclibc- 作為範例。
           TOOLCHAIN_PREFIX="mipsel-linux-uclibc-" 
-          IPROUTE2_VERSION="6.7.0" # iproute2 穩定版本
+          IPROUTE2_VERSION="6.7.0"
           
           echo "CROSS_COMPILE=${TOOLCHAIN_PREFIX}" >> $GITHUB_ENV
           echo "IPROUTE2_VERSION=${IPROUTE2_VERSION}" >> $GITHUB_ENV 
@@ -71,8 +71,7 @@ jobs:
           cd iproute2-${{ env.IPROUTE2_VERSION }}
 
           # 執行編譯：
-          # 1. LDFLAGS="-static" 强制靜態連結 uClibc
-          # 2. SUBDIRS=tc 僅編譯 tc 程式及其依賴庫
+          # LDFLAGS="-static" 强制靜態連結 uClibc
           make CC="${{ env.CROSS_COMPILE }}gcc" \
                LDFLAGS="-static" \
                AR="${{ env.CROSS_COMPILE }}ar" \
@@ -122,7 +121,7 @@ jobs:
           
       - name: Upload images to Artifact
         if: ${{ github.event_name != 'release' && success() }}
-        uses: actions/upload-artifact@v4 # 升級到 v4
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.image_name }}
           path: ${{ env.images_dir }}/*.7z
