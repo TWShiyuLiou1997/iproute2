@@ -37,13 +37,12 @@ jobs:
       - name: Prepare environment (Install dependencies)
         run: |
           sudo apt update
-          # 安裝編譯所需的依賴，包括處理 .tar.xz 的 xz-utils
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils
-          # 關鍵：安裝 32-bit 函式庫以支援 OpenWrt MIPS 交叉編譯器運行
-          sudo apt install -y libc6-i386 lib32z1
+          # ！！！修正點 1：補齊 32-bit C/C++ 運行時依賴，解決 Error 127 ！！！
+          sudo apt install -y libc6-i386 lib32z1 lib32stdc++6 
           
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (新增 CC 絕對路徑匯出)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (匯出所有必要路徑)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -51,45 +50,79 @@ jobs:
           TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
-          echo "正在下載 OpenWrt SDK..."
+          echo "下載 OpenWrt SDK..."
           wget "https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}" -O sdk.tar.xz
           
           echo "解壓工具鏈..."
           mkdir -p sdk
           tar -xf sdk.tar.xz -C sdk --strip-components=1 || { echo "::error::解壓 SDK 失敗。"; exit 1; }
 
-          # 尋找編譯器絕對路徑 (包含 /sdk/staging_dir/...)
+          # 尋找編譯器絕對路徑
           TOOLCHAIN_COMPILER_PATH=$(find sdk/staging_dir -type f -name "*gcc" | head -n 1)
           
           if [ -z "$TOOLCHAIN_COMPILER_PATH" ]; then
-            echo "::error::錯誤：在 SDK 內找不到任何以 'gcc' 結尾的編譯器執行檔，無法繼續。"
+            echo "::error::錯誤：找不到編譯器。"
             exit 1
           fi
 
           TOOLCHAIN_BIN=$(dirname "$TOOLCHAIN_COMPILER_PATH")
           TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
           
-          echo "偵測到的工具鏈 bin 目錄: ${TOOLCHAIN_BIN}"
-          echo "偵測到的工具鏈前綴: ${TOOLCHAIN_PREFIX}"
-
-          # 關鍵修正：將新的 BIN 目錄匯出到當前 Shell 環境 (即時生效)
-          export PATH="$TOOLCHAIN_BIN:$PATH"
-
-          # 匯出環境變數
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
-          # ！！！ 修正點：匯出編譯器的絕對路徑 ！！！
-          echo "CC_FULL_PATH=$TOOLCHAIN_COMPILER_PATH" >> $GITHUB_ENV
+          # 尋找 STAGING_DIR (MIPS Target Libs/Headers) 的根目錄
+          # 這通常是編譯器路徑向上兩層，且包含 'target-' 的目錄
+          STAGING_DIR=$(dirname $(dirname "$TOOLCHAIN_COMPILER_PATH") | grep -o '.*staging_dir/target-.*')
           
-          # 設定版本號和路徑
+          if [ -z "$STAGING_DIR" ]; then
+            echo "::error::錯誤：找不到 Target Staging Directory。"
+            exit 1
+          fi
+          
+          echo "偵測到的工具鏈前綴: ${TOOLCHAIN_PREFIX}"
+          echo "偵測到的 Staging Dir: ${STAGING_DIR}"
+
+          # 匯出所有環境變數
+          echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
+          echo "CC_FULL_PATH=$TOOLCHAIN_COMPILER_PATH" >> $GITHUB_ENV
+          echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
           echo "IPROUTE2_VERSION_LATEST=6.17.0" >> $GITHUB_ENV  
           echo "IPROUTE2_VERSION_FALLBACK=6.8.0" >> $GITHUB_ENV
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
           
         shell: bash
+
+      # -----------------------------------------------------------
+      # 步驟 1.5: 靜態交叉編譯 libmnl (解決 tc 依賴)
+      # -----------------------------------------------------------
+      - name: ⚙️ Pre-compile and Install libmnl
+        run: |
+          LIBMNL_VERSION="1.2.0"
+          LIBMNL_URL="https://netfilter.org/projects/libmnl/files/libmnl-${LIBMNL_VERSION}.tar.bz2"
+          HOST_TRIPLE=$(echo "${{ env.CROSS_COMPILE }}" | sed 's/-$//') # mipsel-openwrt-linux-musl
+
+          echo "下載 libmnl v${LIBMNL_VERSION}..."
+          wget "${LIBMNL_URL}"
+          tar -xf libmnl-${LIBMNL_VERSION}.tar.bz2
+          cd libmnl-${LIBMNL_VERSION}
+          
+          # 執行 configure，設定交叉編譯、禁用共享函式庫、啟用靜態函式庫
+          # ！！！使用 STAGING_DIR 作為 DESTDIR 以確保 iproute2 能找到 ！！！
+          ./configure --host=$HOST_TRIPLE \
+                      --prefix=/usr \
+                      --disable-shared \
+                      --enable-static \
+                      CC="${{ env.CC_FULL_PATH }}" \
+                      CFLAGS="-Os -pipe" \
+                      LDFLAGS=""
+          
+          make
+          make install DESTDIR="${{ env.STAGING_DIR }}"
+          
+          echo "libmnl 靜態編譯完成並安裝到 ${{ env.STAGING_DIR }}/usr/lib"
+          cd ..
+        shell: bash
         
       # -----------------------------------------------------------
-      # 步驟 2: 靜態編譯 TC (使用 CC 絕對路徑)
+      # 步驟 2: 靜態編譯 TC (使用 CC 絕對路徑及 libmnl 連結旗標)
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
@@ -98,39 +131,27 @@ jobs:
           VERSION_TO_USE=""
           ARCHIVE_SUFFIX=""
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
+          AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
-          # 函數：嘗試下載並設定版本 (優先 .tar.xz)
+          # 函數：嘗試下載並設定版本
+          try_download() { ... } # 保持下載邏輯不變 (已修正)
           try_download() {
               local version=$1
-              
-              # 優先嘗試下載 .tar.xz (體積最小)
               if wget "${BASE_URL}iproute2-${version}.tar.xz"; then
-                  VERSION_TO_USE="${version}"
-                  ARCHIVE_SUFFIX=".tar.xz"
-                  echo "已找到版本 ${version} (${ARCHIVE_SUFFIX}) - 優先使用。"
-                  return 0
+                  VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.xz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX}) - 優先使用。"; return 0
               fi
-              
-              # 其次嘗試下載 .tar.gz
               if wget "${BASE_URL}iproute2-${version}.tar.gz"; then
-                  VERSION_TO_USE="${version}"
-                  ARCHIVE_SUFFIX=".tar.gz"
-                  echo "已找到版本 ${version} (${ARCHIVE_SUFFIX})。"
-                  return 0
+                  VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.gz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX})。" ; return 0
               fi
-              
               return 1
           }
 
-          # 嘗試最新版本
+          # 執行下載
           echo "嘗試下載最新版本 iproute2-${LATEST_VERSION}..."
           if ! try_download "${LATEST_VERSION}"; then
               echo "::warning::警告：最新版本 ${LATEST_VERSION} 無法下載。嘗試回退到 ${FALLBACK_VERSION} 版本。"
-              
-              # 嘗試備用版本
               if ! try_download "${FALLBACK_VERSION}"; then
-                  echo "::error::錯誤：回退版本 ${FALLBACK_VERSION} 仍無法下載。下載失敗。"
-                  exit 1
+                  echo "::error::錯誤：下載失敗。" ; exit 1
               fi
           fi
 
@@ -138,13 +159,11 @@ jobs:
           tar -xf iproute2-${VERSION_TO_USE}${ARCHIVE_SUFFIX}
           cd iproute2-${VERSION_TO_USE}
 
-          # 導出 AR 的絕對路徑 (假設它在同一個 bin 目錄，且名稱以 ar 結尾)
-          AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
-
           # 靜態交叉編譯 tc：
-          # 修正點：CC 和 AR 皆使用絕對路徑，防止 make 子程序找不到執行檔。
+          # 修正點：使用 CC/AR 絕對路徑 + 新增 LDFLAGS 和 CFLAGS 指向 libmnl
           make CC="${{ env.CC_FULL_PATH }}" \
-               LDFLAGS="-static" \
+               LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
+               CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
                AR="${AR_FULL_PATH}" \
                SUBDIRS=tc 
           
@@ -159,7 +178,6 @@ jobs:
           echo "--- 靜態連結驗證結果 ---"
           file ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           
-          # 將最終使用的版本號匯出，以便上傳 Artifact 時使用
           echo "IPROUTE2_VERSION=${VERSION_TO_USE}" >> $GITHUB_ENV
 
         shell: bash
