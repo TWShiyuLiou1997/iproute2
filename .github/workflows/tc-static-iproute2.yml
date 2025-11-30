@@ -37,11 +37,13 @@ jobs:
       - name: Prepare environment (Install dependencies)
         run: |
           sudo apt update
-          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils # xz-utils for .tar.xz
-          sudo apt install -y libc6-i386 lib32z1 # 32-bit libs for MIPS toolchain
+          # 安裝編譯所需的依賴，包括處理 .tar.xz 的 xz-utils
+          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils
+          # 關鍵：安裝 32-bit 函式庫以支援 OpenWrt MIPS 交叉編譯器運行
+          sudo apt install -y libc6-i386 lib32z1
           
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (使用最新版本 6.17.0)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (新增 CC 絕對路徑匯出)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -56,6 +58,7 @@ jobs:
           mkdir -p sdk
           tar -xf sdk.tar.xz -C sdk --strip-components=1 || { echo "::error::解壓 SDK 失敗。"; exit 1; }
 
+          # 尋找編譯器絕對路徑 (包含 /sdk/staging_dir/...)
           TOOLCHAIN_COMPILER_PATH=$(find sdk/staging_dir -type f -name "*gcc" | head -n 1)
           
           if [ -z "$TOOLCHAIN_COMPILER_PATH" ]; then
@@ -75,22 +78,18 @@ jobs:
           # 匯出環境變數
           echo "PATH=$PATH" >> $GITHUB_ENV
           echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
+          # ！！！ 修正點：匯出編譯器的絕對路徑 ！！！
+          echo "CC_FULL_PATH=$TOOLCHAIN_COMPILER_PATH" >> $GITHUB_ENV
           
-          # 設置最新版本 (6.17.0) 和備用版本
+          # 設定版本號和路徑
           echo "IPROUTE2_VERSION_LATEST=6.17.0" >> $GITHUB_ENV  
           echo "IPROUTE2_VERSION_FALLBACK=6.8.0" >> $GITHUB_ENV
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
           
-          echo "驗證編譯器路徑..."
-          if ! which "${TOOLCHAIN_PREFIX}gcc"; then
-              echo "::error::錯誤：which 命令找不到 ${TOOLCHAIN_PREFIX}gcc。"
-              exit 1
-          fi
-          
         shell: bash
         
       # -----------------------------------------------------------
-      # 步驟 2: 靜態編譯 TC (優先下載 .tar.xz)
+      # 步驟 2: 靜態編譯 TC (使用 CC 絕對路徑)
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
@@ -139,10 +138,14 @@ jobs:
           tar -xf iproute2-${VERSION_TO_USE}${ARCHIVE_SUFFIX}
           cd iproute2-${VERSION_TO_USE}
 
-          # 靜態交叉編譯 tc
-          make CC="${{ env.CROSS_COMPILE }}gcc" \
+          # 導出 AR 的絕對路徑 (假設它在同一個 bin 目錄，且名稱以 ar 結尾)
+          AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
+
+          # 靜態交叉編譯 tc：
+          # 修正點：CC 和 AR 皆使用絕對路徑，防止 make 子程序找不到執行檔。
+          make CC="${{ env.CC_FULL_PATH }}" \
                LDFLAGS="-static" \
-               AR="${{ env.CROSS_COMPILE }}ar" \
+               AR="${AR_FULL_PATH}" \
                SUBDIRS=tc 
           
           mkdir -p ${{ env.TC_STATIC_PATH }}
