@@ -37,11 +37,11 @@ jobs:
       - name: Prepare environment (Install dependencies)
         run: |
           sudo apt update
-          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget
+          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils # xz-utils for .tar.xz
           sudo apt install -y libc6-i386 lib32z1 # 32-bit libs for MIPS toolchain
           
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (更新版本號)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (使用最新版本 6.17.0)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -76,9 +76,9 @@ jobs:
           echo "PATH=$PATH" >> $GITHUB_ENV
           echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
           
-          # ！！！ 版本號已更新為 6.17.0 ！！！
+          # 設置最新版本 (6.17.0) 和備用版本
           echo "IPROUTE2_VERSION_LATEST=6.17.0" >> $GITHUB_ENV  
-          echo "IPROUTE2_VERSION_FALLBACK=6.8.0" >> $GITHUB_ENV # 備用版本
+          echo "IPROUTE2_VERSION_FALLBACK=6.8.0" >> $GITHUB_ENV
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
           
           echo "驗證編譯器路徑..."
@@ -90,7 +90,7 @@ jobs:
         shell: bash
         
       # -----------------------------------------------------------
-      # 步驟 2: 靜態編譯 TC (修正 URL 檔案尾碼及新增回退邏輯)
+      # 步驟 2: 靜態編譯 TC (優先下載 .tar.xz)
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
@@ -100,22 +100,22 @@ jobs:
           ARCHIVE_SUFFIX=""
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
 
-          # 函數：嘗試下載並設定版本
+          # 函數：嘗試下載並設定版本 (優先 .tar.xz)
           try_download() {
               local version=$1
               
-              # 嘗試下載 .tar.gz
-              if wget "${BASE_URL}iproute2-${version}.tar.gz"; then
-                  VERSION_TO_USE="${version}"
-                  ARCHIVE_SUFFIX=".tar.gz"
-                  echo "已找到版本 ${version} (${ARCHIVE_SUFFIX})。"
-                  return 0
-              fi
-              
-              # 嘗試下載 .tar.xz
+              # 優先嘗試下載 .tar.xz (體積最小)
               if wget "${BASE_URL}iproute2-${version}.tar.xz"; then
                   VERSION_TO_USE="${version}"
                   ARCHIVE_SUFFIX=".tar.xz"
+                  echo "已找到版本 ${version} (${ARCHIVE_SUFFIX}) - 優先使用。"
+                  return 0
+              fi
+              
+              # 其次嘗試下載 .tar.gz
+              if wget "${BASE_URL}iproute2-${version}.tar.gz"; then
+                  VERSION_TO_USE="${version}"
+                  ARCHIVE_SUFFIX=".tar.gz"
                   echo "已找到版本 ${version} (${ARCHIVE_SUFFIX})。"
                   return 0
               fi
@@ -126,11 +126,11 @@ jobs:
           # 嘗試最新版本
           echo "嘗試下載最新版本 iproute2-${LATEST_VERSION}..."
           if ! try_download "${LATEST_VERSION}"; then
-              echo "::warning::警告：版本 ${LATEST_VERSION} 找不到。嘗試回退到 ${FALLBACK_VERSION} 版本。"
+              echo "::warning::警告：最新版本 ${LATEST_VERSION} 無法下載。嘗試回退到 ${FALLBACK_VERSION} 版本。"
               
               # 嘗試備用版本
               if ! try_download "${FALLBACK_VERSION}"; then
-                  echo "::error::錯誤：回退版本 ${FALLBACK_VERSION} 仍找不到。下載失敗。"
+                  echo "::error::錯誤：回退版本 ${FALLBACK_VERSION} 仍無法下載。下載失敗。"
                   exit 1
               fi
           fi
