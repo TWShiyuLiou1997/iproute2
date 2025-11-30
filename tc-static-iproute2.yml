@@ -1,86 +1,138 @@
-name: Statically Compile TC (iproute2) for MIPS-uClibc
+name: CI with Static TC Build
 
-on:
+# Controls when the action will run. 
+on: 
+  push:
+  pull_request:
   workflow_dispatch:
     inputs:
-      iproute2_version:
-        description: 'iproute2 版本 (例如：6.7.0)'
-        required: true
-        default: '6.7.0'
+      debug_enabled:
+        description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'      
+        required: false
+        default: 'no'
+  release:
+    types: [published]
 
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  build-tc:
-    runs-on: ubuntu-latest
-    
+  build:
+    name: build
+    runs-on: ubuntu-20.04
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
+    env:
+      build_variant: ${{ matrix.build_variant }}
+      targets: ${{ matrix.targets }}
+      images_dir: /opt/images
+    strategy:
+      matrix:
+        include:
+          - build_variant: "mt7621"
+            targets: "K2P"
+            
     steps:
-    - name: 📥 Checkout Code
-      uses: actions/checkout@v4
-
-    # -----------------------------------------------------------
-    # ⚠️ 步驟 1: 配置 MIPS uClibc 工具鏈 (此為假設)
-    # -----------------------------------------------------------
-    - name: ⬇️ 準備 MIPS uClibc 交叉編譯器
-      # ⚠️ 注意：您必須在此處替換為您的 MIPS uClibc 工具鏈下載和解壓指令
-      # 由於無法在標準 runner 上自動獲取您的私有工具鏈，我們用一個佔位符。
-      # 
-      # 實際操作中，您可以手動上傳工具鏈壓縮包到您的 repo，然後在這裡解壓：
-      # run: tar -xf mips-uclibc-toolchain.tar.gz -C ${{ github.workspace }}/toolchain
+      - uses: actions/checkout@v4 # 升級到 v4
       
-      # 為了演示，我們模擬將工具鏈的 bin 目錄加入 PATH
-      run: |
-        # 模擬工具鏈前綴 (Entware/OpenWrt 常見格式)
-        TOOLCHAIN_PREFIX="mips-openwrt-linux-uclibc-" 
-        echo "CROSS_COMPILE=${TOOLCHAIN_PREFIX}" >> $GITHUB_ENV
+      - name: Prepare environment
+        run: |
+          sudo apt update
+          # 安裝編譯 iproute2 所需的額外依賴
+          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget
+          
+      - name: Run shellcheck
+        run: sh ./trunk/tools/shellcheck.sh
         
-        # ⚠️ 這裡通常需要將工具鏈的 bin/ 目錄加入 PATH
-        # 假設您的工具鏈安裝目錄是 /opt/mips-uclibc-sdk/bin
-        # echo "PATH=/opt/mips-uclibc-sdk/bin:$PATH" >> $GITHUB_ENV
-      shell: bash
+      - name: Prepare toolchain
+        run: |
+          cd toolchain-mipsel
+          # 假設此腳本會將 MIPS uClibc 工具鏈安裝並設置在 PATH 中
+          sh dl_toolchain.sh
+          
+      # -----------------------------------------------------------
+      # 🚀 靜態編譯 TC 核心步驟開始
+      # -----------------------------------------------------------
+      - name: Define Cross-Compile Variables for TC
+        id: tc_vars
+        run: |
+          # ⚠️ 根據您的 dl_toolchain.sh 腳本的實際輸出，調整工具鏈前綴。
+          # 這裡使用常見的 mipsel-linux-uclibc- 作為範例。
+          TOOLCHAIN_PREFIX="mipsel-linux-uclibc-" 
+          IPROUTE2_VERSION="6.7.0" # iproute2 穩定版本
+          
+          echo "CROSS_COMPILE=${TOOLCHAIN_PREFIX}" >> $GITHUB_ENV
+          echo "IPROUTE2_VERSION=${IPROUTE2_VERSION}" >> $GITHUB_ENV 
+          echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
+        shell: bash
 
-    # -----------------------------------------------------------
-    # 步驟 2: 下載並設定 iproute2 
-    # -----------------------------------------------------------
-    - name: ⬇️ 下載並解壓 iproute2 原始碼
-      run: |
-        VERSION=${{ github.event.inputs.iproute2_version }}
-        wget https://mirrors.edge.kernel.org/pub/linux/utils/iproute2/iproute2-$VERSION.tar.xz
-        tar -xf iproute2-$VERSION.tar.xz
-      shell: bash
+      - name: Download and Statically Compile TC
+        run: |
+          # 下載 iproute2 源碼
+          wget https://mirrors.edge.kernel.org/pub/linux/utils/iproute2/iproute2-${{ env.IPROUTE2_VERSION }}.tar.xz
+          tar -xf iproute2-${{ env.IPROUTE2_VERSION }}.tar.xz
+          cd iproute2-${{ env.IPROUTE2_VERSION }}
 
-    - name: 🛠️ 靜態編譯 TC
-      run: |
-        # 進入 iproute2 目錄
-        cd iproute2-*
-        
-        # 確保編譯器使用正確的前綴
-        CC_CMD="${{ env.CROSS_COMPILE }}gcc"
-        
-        # 編譯設定：
-        # 1. CC: 指定交叉編譯器
-        # 2. LDFLAGS: 加入 -static 旗標，強制靜態連結
-        # 3. LDFLAGS: 加入 -static 旗標，強制靜態連結
-        # 4. AR: 指定交叉編譯的 ar 工具
-        # 5. SUBDIRS=tc: 只編譯 tc 目錄及其依賴
-        
-        make CC="$CC_CMD" \
-             LDFLAGS="-static" \
-             AR="${{ env.CROSS_COMPILE }}ar" \
-             SUBDIRS=tc 
-             
-        # 由於 iproute2 的編譯結果會在 tc/ 目錄下，我們複製出來
-        cp tc/tc ${{ github.workspace }}/tc_static_mips
-      shell: bash
+          # 執行編譯：
+          # 1. LDFLAGS="-static" 强制靜態連結 uClibc
+          # 2. SUBDIRS=tc 僅編譯 tc 程式及其依賴庫
+          make CC="${{ env.CROSS_COMPILE }}gcc" \
+               LDFLAGS="-static" \
+               AR="${{ env.CROSS_COMPILE }}ar" \
+               SUBDIRS=tc 
+          
+          # 複製編譯好的靜態執行檔
+          mkdir -p ${{ env.TC_STATIC_PATH }}
+          cp tc/tc ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
+          
+          echo "--- 靜態連結驗證結果 ---"
+          file ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
+        shell: bash
 
-    # -----------------------------------------------------------
-    # 步驟 3: 驗證與輸出
-    # -----------------------------------------------------------
-    - name: 🔍 驗證靜態連結
-      run: file tc_static_mips
-      shell: bash
-
-    - name: 📤 上傳靜態 TC 執行檔
-      uses: actions/upload-artifact@v4
-      with:
-        name: tc-static-mips-uclibc
-        path: tc_static_mips
-        retention-days: 7
+      - name: Upload Static TC Binary as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tc_static_mipsel_${{ env.IPROUTE2_VERSION }}
+          path: ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
+          retention-days: 90
+      # -----------------------------------------------------------
+      # 靜態編譯 TC 核心步驟結束
+      # -----------------------------------------------------------
+      
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_enabled == 'yes' }}
+        with:
+          limit-access-to-actor: true
+          
+      - name: Start build
+        run: |
+          cd trunk
+          mkdir -p ${images_dir}
+          for m in $targets; do fakeroot ./build_firmware_ci $m; \
+          if [ $? = 0 ]; then cp -f images/*.trx ${images_dir}/$m.trx; else exit 1; fi; \
+          ./clear_tree_simple >/dev/null 2>&1; done
+          
+      - name: Create archive
+        if: ${{ github.event_name != 'release' && success() }}
+        run: |
+          ls -lh ${images_dir}
+          # 使用 7z
+          GIT_VERSION=`git rev-parse --short=7 HEAD 2>/dev/null` && [ -n "$GIT_VERSION" ] && \
+          image_name=images_${build_variant}_${GIT_VERSION} || image_name=images_${build_variant}
+          cd ${images_dir}; md5sum *.trx |tee md5sum.txt; 7z a -mx=9 ${image_name}.7z ./*
+          echo "image_name=${image_name}" >> $GITHUB_ENV
+          
+      - name: Upload images to Artifact
+        if: ${{ github.event_name != 'release' && success() }}
+        uses: actions/upload-artifact@v4 # 升級到 v4
+        with:
+          name: ${{ env.image_name }}
+          path: ${{ env.images_dir }}/*.7z
+          
+      - name: Upload images to Releases
+        if: ${{ github.event_name == 'release' && success() }}
+        uses: svenstaro/upload-release-action@2.2.0
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ env.images_dir }}/*.trx
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
