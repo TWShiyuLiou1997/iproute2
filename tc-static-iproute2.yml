@@ -1,0 +1,86 @@
+name: Statically Compile TC (iproute2) for MIPS-uClibc
+
+on:
+  workflow_dispatch:
+    inputs:
+      iproute2_version:
+        description: 'iproute2 版本 (例如：6.7.0)'
+        required: true
+        default: '6.7.0'
+
+jobs:
+  build-tc:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout Code
+      uses: actions/checkout@v4
+
+    # -----------------------------------------------------------
+    # ⚠️ 步驟 1: 配置 MIPS uClibc 工具鏈 (此為假設)
+    # -----------------------------------------------------------
+    - name: ⬇️ 準備 MIPS uClibc 交叉編譯器
+      # ⚠️ 注意：您必須在此處替換為您的 MIPS uClibc 工具鏈下載和解壓指令
+      # 由於無法在標準 runner 上自動獲取您的私有工具鏈，我們用一個佔位符。
+      # 
+      # 實際操作中，您可以手動上傳工具鏈壓縮包到您的 repo，然後在這裡解壓：
+      # run: tar -xf mips-uclibc-toolchain.tar.gz -C ${{ github.workspace }}/toolchain
+      
+      # 為了演示，我們模擬將工具鏈的 bin 目錄加入 PATH
+      run: |
+        # 模擬工具鏈前綴 (Entware/OpenWrt 常見格式)
+        TOOLCHAIN_PREFIX="mips-openwrt-linux-uclibc-" 
+        echo "CROSS_COMPILE=${TOOLCHAIN_PREFIX}" >> $GITHUB_ENV
+        
+        # ⚠️ 這裡通常需要將工具鏈的 bin/ 目錄加入 PATH
+        # 假設您的工具鏈安裝目錄是 /opt/mips-uclibc-sdk/bin
+        # echo "PATH=/opt/mips-uclibc-sdk/bin:$PATH" >> $GITHUB_ENV
+      shell: bash
+
+    # -----------------------------------------------------------
+    # 步驟 2: 下載並設定 iproute2 
+    # -----------------------------------------------------------
+    - name: ⬇️ 下載並解壓 iproute2 原始碼
+      run: |
+        VERSION=${{ github.event.inputs.iproute2_version }}
+        wget https://mirrors.edge.kernel.org/pub/linux/utils/iproute2/iproute2-$VERSION.tar.xz
+        tar -xf iproute2-$VERSION.tar.xz
+      shell: bash
+
+    - name: 🛠️ 靜態編譯 TC
+      run: |
+        # 進入 iproute2 目錄
+        cd iproute2-*
+        
+        # 確保編譯器使用正確的前綴
+        CC_CMD="${{ env.CROSS_COMPILE }}gcc"
+        
+        # 編譯設定：
+        # 1. CC: 指定交叉編譯器
+        # 2. LDFLAGS: 加入 -static 旗標，強制靜態連結
+        # 3. LDFLAGS: 加入 -static 旗標，強制靜態連結
+        # 4. AR: 指定交叉編譯的 ar 工具
+        # 5. SUBDIRS=tc: 只編譯 tc 目錄及其依賴
+        
+        make CC="$CC_CMD" \
+             LDFLAGS="-static" \
+             AR="${{ env.CROSS_COMPILE }}ar" \
+             SUBDIRS=tc 
+             
+        # 由於 iproute2 的編譯結果會在 tc/ 目錄下，我們複製出來
+        cp tc/tc ${{ github.workspace }}/tc_static_mips
+      shell: bash
+
+    # -----------------------------------------------------------
+    # 步驟 3: 驗證與輸出
+    # -----------------------------------------------------------
+    - name: 🔍 驗證靜態連結
+      run: file tc_static_mips
+      shell: bash
+
+    - name: 📤 上傳靜態 TC 執行檔
+      uses: actions/upload-artifact@v4
+      with:
+        name: tc-static-mips-uclibc
+        path: tc_static_mips
+        retention-days: 7
