@@ -38,11 +38,11 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils
-          # ！！！修正點 1：補齊 32-bit C/C++ 運行時依賴，解決 Error 127 ！！！
+          # 修正點：補齊 32-bit C/C++ 運行時依賴，解決未來可能出現的 Error 127 
           sudo apt install -y libc6-i386 lib32z1 lib32stdc++6 
           
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (匯出所有必要路徑)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (新增下載重試邏輯)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -50,12 +50,31 @@ jobs:
           TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
-          echo "下載 OpenWrt SDK..."
-          wget "https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}" -O sdk.tar.xz
+          # ！！！ 修正點：新增 SDK 下載及解壓重試邏輯 ！！！
+          MAX_RETRIES=2
+          RETRY_COUNT=0
+          SDK_DOWNLOAD_URL="https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}"
           
-          echo "解壓工具鏈..."
-          mkdir -p sdk
-          tar -xf sdk.tar.xz -C sdk --strip-components=1 || { echo "::error::解壓 SDK 失敗。"; exit 1; }
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              echo "嘗試下載 OpenWrt SDK (第 $((RETRY_COUNT + 1)) 次)..."
+              wget "$SDK_DOWNLOAD_URL" -O sdk.tar.xz
+              
+              echo "解壓工具鏈..."
+              mkdir -p sdk
+              # 使用 -Jxf 顯式指定 XZ 格式，增加穩健性
+              if tar -Jxf sdk.tar.xz -C sdk --strip-components=1; then
+                  echo "SDK 解壓成功。"
+                  break  # 成功，跳出循環
+              else
+                  RETRY_COUNT=$((RETRY_COUNT + 1))
+                  if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+                      echo "::error::錯誤：SDK 下載及解壓在 ${MAX_RETRIES} 次嘗試後仍失敗。請檢查網路或 URL。"
+                      exit 1
+                  fi
+                  echo "::warning::警告：解壓失敗 (可能檔案損壞)。清理並重試..."
+                  rm -rf sdk sdk.tar.xz # 清理並重試
+              fi
+          done
 
           # 尋找編譯器絕對路徑
           TOOLCHAIN_COMPILER_PATH=$(find sdk/staging_dir -type f -name "*gcc" | head -n 1)
@@ -69,7 +88,6 @@ jobs:
           TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
           
           # 尋找 STAGING_DIR (MIPS Target Libs/Headers) 的根目錄
-          # 這通常是編譯器路徑向上兩層，且包含 'target-' 的目錄
           STAGING_DIR=$(dirname $(dirname "$TOOLCHAIN_COMPILER_PATH") | grep -o '.*staging_dir/target-.*')
           
           if [ -z "$STAGING_DIR" ]; then
@@ -105,7 +123,6 @@ jobs:
           cd libmnl-${LIBMNL_VERSION}
           
           # 執行 configure，設定交叉編譯、禁用共享函式庫、啟用靜態函式庫
-          # ！！！使用 STAGING_DIR 作為 DESTDIR 以確保 iproute2 能找到 ！！！
           ./configure --host=$HOST_TRIPLE \
                       --prefix=/usr \
                       --disable-shared \
@@ -115,6 +132,7 @@ jobs:
                       LDFLAGS=""
           
           make
+          # 將靜態函式庫和標頭檔安裝到 SDK 的目標目錄
           make install DESTDIR="${{ env.STAGING_DIR }}"
           
           echo "libmnl 靜態編譯完成並安裝到 ${{ env.STAGING_DIR }}/usr/lib"
@@ -134,7 +152,6 @@ jobs:
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
           # 函數：嘗試下載並設定版本
-          try_download() { ... } # 保持下載邏輯不變 (已修正)
           try_download() {
               local version=$1
               if wget "${BASE_URL}iproute2-${version}.tar.xz"; then
@@ -160,7 +177,7 @@ jobs:
           cd iproute2-${VERSION_TO_USE}
 
           # 靜態交叉編譯 tc：
-          # 修正點：使用 CC/AR 絕對路徑 + 新增 LDFLAGS 和 CFLAGS 指向 libmnl
+          # LDFLAGS 新增 -L 和 -lmnl 旗標，指向剛才編譯的 libmnl 靜態函式庫
           make CC="${{ env.CC_FULL_PATH }}" \
                LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
                CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
