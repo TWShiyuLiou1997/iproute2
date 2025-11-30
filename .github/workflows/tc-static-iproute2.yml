@@ -1,12 +1,16 @@
 name: CI with Static TC Build
 
+# 定義觸發條件
 on: 
   push:
+    # 排除標籤推送 (Tags)
+    paths-ignore:
+      - '**.md'
   pull_request:
   workflow_dispatch:
     inputs:
       debug_enabled:
-        description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'      
+        description: 'Run the build with tmate debugging enabled'      
         required: false
         default: 'no'
   release:
@@ -30,17 +34,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Prepare environment
+      - name: Prepare environment (Install dependencies)
         run: |
           sudo apt update
-          # 1. 安裝編譯 iproute2 所需的依賴
+          # 安裝編譯 iproute2 所需的依賴
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget
           
-          # 2. 安裝 32-bit 函式庫以支援 OpenWrt 交叉編譯器運行 (已包含在您的原腳本中)
+          # 關鍵：安裝 32-bit 函式庫以支援 OpenWrt MIPS 交叉編譯器運行
           sudo apt install -y libc6-i386 lib32z1
           
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (修正了驗證邏輯)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (修正 PATH 即時生效)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -54,10 +58,10 @@ jobs:
           
           echo "解壓工具鏈..."
           mkdir -p sdk
-          tar -xf sdk.tar.xz -C sdk --strip-components=1
+          # 錯誤檢查：如果 tar 失敗則中斷
+          tar -xf sdk.tar.xz -C sdk --strip-components=1 || { echo "::error::解壓 SDK 失敗。"; exit 1; }
 
           # 2. 穩健地尋找交叉編譯器所在的 bin 目錄
-          # A. 直接在 staging_dir 內尋找第一個以 "gcc" 結尾的檔案
           TOOLCHAIN_COMPILER_PATH=$(find sdk/staging_dir -type f -name "*gcc" | head -n 1)
           
           if [ -z "$TOOLCHAIN_COMPILER_PATH" ]; then
@@ -65,37 +69,38 @@ jobs:
             exit 1
           fi
 
-          # B. 取得該編譯器所在的 bin 目錄
           TOOLCHAIN_BIN=$(dirname "$TOOLCHAIN_COMPILER_PATH")
-
-          # C. 從編譯器檔案中確定完整的編譯器前綴
           TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
           
           echo "偵測到的工具鏈 bin 目錄: ${TOOLCHAIN_BIN}"
           echo "偵測到的工具鏈前綴: ${TOOLCHAIN_PREFIX}"
 
-          # 3. 匯出 PATH 和 CROSS_COMPILE 到 GitHub 環境
-          echo "PATH=$TOOLCHAIN_BIN:$PATH" >> $GITHUB_ENV
+          # ！！！關鍵修正：將新的 BIN 目錄匯出到當前 Shell 環境 (即時生效) ！！！
+          # 確保 which 和 gcc --version 在此 Step 內能執行
+          export PATH="$TOOLCHAIN_BIN:$PATH"
+
+          # 3. 匯出 PATH 和 CROSS_COMPILE 到 GitHub 環境 (供下一個 Step 使用)
+          echo "PATH=$PATH" >> $GITHUB_ENV
           echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
           echo "IPROUTE2_VERSION=6.7.0" >> $GITHUB_ENV  
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
           
           echo "驗證編譯器路徑..."
-          # 檢查命令是否存在
+          # 執行於當前已更新的 PATH
           if ! which "${TOOLCHAIN_PREFIX}gcc"; then
-              echo "::error::錯誤：which 命令找不到 ${TOOLCHAIN_PREFIX}gcc。PATH 設定失敗。"
+              echo "::error::錯誤：which 命令找不到 ${TOOLCHAIN_PREFIX}gcc。"
               exit 1
           fi
           # 執行編譯器並檢查是否成功
           if ! "${TOOLCHAIN_PREFIX}gcc" --version; then
-              echo "::error::錯誤：編譯器 (${TOOLCHAIN_PREFIX}gcc) 無法執行。請檢查 32 位依賴庫 (libc6-i386) 是否安裝正確。"
+              echo "::error::錯誤：編譯器 (${TOOLCHAIN_PREFIX}gcc) 無法執行。請檢查 32 位依賴庫是否正確。"
               exit 1
           fi
           
         shell: bash
         
       # -----------------------------------------------------------
-      # 靜態編譯 TC 步驟 
+      # 步驟 2: 靜態編譯 TC (輸出靜態 tc binary)
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
@@ -103,24 +108,29 @@ jobs:
           tar -xf iproute2-${{ env.IPROUTE2_VERSION }}.tar.xz
           cd iproute2-${{ env.IPROUTE2_VERSION }}
 
+          # 靜態交叉編譯 tc：使用 -static 標誌強制靜態連結
           make CC="${{ env.CROSS_COMPILE }}gcc" \
                LDFLAGS="-static" \
                AR="${{ env.CROSS_COMPILE }}ar" \
                SUBDIRS=tc 
           
           mkdir -p ${{ env.TC_STATIC_PATH }}
-          # 檢查 tc 是否編譯成功
           if [ ! -f "tc/tc" ]; then
             echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。"
             exit 1
           fi
           
+          # 將靜態編譯結果命名後複製到指定路徑
           cp tc/tc ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           
           echo "--- 靜態連結驗證結果 ---"
+          # 驗證是否為靜態連結
           file ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
         shell: bash
 
+      # -----------------------------------------------------------
+      # 步驟 3: 上傳靜態 TC Binary 作為 Artifact
+      # -----------------------------------------------------------
       - name: Upload Static TC Binary as Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -129,7 +139,7 @@ jobs:
           retention-days: 90
           
       # -----------------------------------------------------------
-      # 原有的韌體編譯流程 (保持不變)
+      # 後續韌體編譯流程 (保持不變)
       # -----------------------------------------------------------
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
@@ -141,9 +151,16 @@ jobs:
         run: |
           cd trunk
           mkdir -p ${images_dir}
-          for m in $targets; do fakeroot ./build_firmware_ci $m; \
-          if [ $? = 0 ]; then cp -f images/*.trx ${images_dir}/$m.trx; else exit 1; fi; \
-          ./clear_tree_simple >/dev/null 2>&1; done
+          for m in $targets; do 
+            fakeroot ./build_firmware_ci $m
+            if [ $? -eq 0 ]; then 
+              cp -f images/*.trx ${images_dir}/$m.trx
+            else 
+              echo "::error::韌體編譯失敗: $m"
+              exit 1
+            fi
+            ./clear_tree_simple >/dev/null 2>&1
+          done
           
       - name: Create archive
         if: ${{ github.event_name != 'release' && success() }}
