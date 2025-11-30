@@ -33,10 +33,10 @@ jobs:
       - name: Prepare environment
         run: |
           sudo apt update
-          # 安裝編譯 iproute2 所需的依賴
-          sudo apt install -y libtool-bin gperf python3-docdocs autopoint gettext bison flex wget
+          # 1. 安裝編譯 iproute2 所需的依賴 (修正 python3-docdocs 為 python3-docutils)
+          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget
           
-          # 🚨 修正：安裝 32-bit 函式庫以支援 OpenWrt 交叉編譯器運行
+          # 2. 安裝 32-bit 函式庫以支援 OpenWrt 交叉編譯器運行
           sudo apt install -y libc6-i386 lib32z1
           
       # -----------------------------------------------------------
@@ -55,7 +55,7 @@ jobs:
           mkdir -p sdk
           tar -xf sdk.tar.xz -C sdk --strip-components=1
 
-          # 2. 穩健地尋找交叉編譯器所在的 bin 目錄 (修正點)
+          # 2. 穩健地尋找交叉編譯器所在的 bin 目錄
           # A. 直接在 staging_dir 內尋找第一個以 "gcc" 結尾的檔案
           TOOLCHAIN_COMPILER_PATH=$(find sdk/staging_dir -type f -name "*gcc" | head -n 1)
           
@@ -80,7 +80,6 @@ jobs:
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
           
           echo "驗證編譯器路徑..."
-          # 🚨 此處現在應該能成功運行，因為 32 位元函式庫已安裝
           which "${TOOLCHAIN_PREFIX}gcc"
           "${TOOLCHAIN_PREFIX}gcc" --version
           
