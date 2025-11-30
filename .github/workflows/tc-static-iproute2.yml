@@ -1,9 +1,8 @@
 name: CI with Static TC Build
 
-# 定義觸發條件
+# 定義觸發條件 (與原腳本保持一致)
 on: 
   push:
-    # 排除標籤推送 (Tags)
     paths-ignore:
       - '**.md'
   pull_request:
@@ -20,6 +19,7 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    # 確保在標籤推送時不運行 CI build
     if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
     env:
       build_variant: ${{ matrix.build_variant }}
@@ -32,7 +32,8 @@ jobs:
             targets: "K2P"
             
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
       
       - name: Prepare environment (Install dependencies)
         run: |
@@ -58,7 +59,6 @@ jobs:
           
           echo "解壓工具鏈..."
           mkdir -p sdk
-          # 錯誤檢查：如果 tar 失敗則中斷
           tar -xf sdk.tar.xz -C sdk --strip-components=1 || { echo "::error::解壓 SDK 失敗。"; exit 1; }
 
           # 2. 穩健地尋找交叉編譯器所在的 bin 目錄
@@ -76,13 +76,13 @@ jobs:
           echo "偵測到的工具鏈前綴: ${TOOLCHAIN_PREFIX}"
 
           # ！！！關鍵修正：將新的 BIN 目錄匯出到當前 Shell 環境 (即時生效) ！！！
-          # 確保 which 和 gcc --version 在此 Step 內能執行
           export PATH="$TOOLCHAIN_BIN:$PATH"
 
           # 3. 匯出 PATH 和 CROSS_COMPILE 到 GitHub 環境 (供下一個 Step 使用)
           echo "PATH=$PATH" >> $GITHUB_ENV
           echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
-          echo "IPROUTE2_VERSION=6.7.0" >> $GITHUB_ENV  
+          # 修正下載版本錯誤：使用一個較新的版本
+          echo "IPROUTE2_VERSION=6.9.0" >> $GITHUB_ENV  
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
           
           echo "驗證編譯器路徑..."
@@ -91,9 +91,8 @@ jobs:
               echo "::error::錯誤：which 命令找不到 ${TOOLCHAIN_PREFIX}gcc。"
               exit 1
           fi
-          # 執行編譯器並檢查是否成功
           if ! "${TOOLCHAIN_PREFIX}gcc" --version; then
-              echo "::error::錯誤：編譯器 (${TOOLCHAIN_PREFIX}gcc) 無法執行。請檢查 32 位依賴庫是否正確。"
+              echo "::error::錯誤：編譯器 (${TOOLCHAIN_PREFIX}gcc) 無法執行。"
               exit 1
           fi
           
@@ -120,16 +119,14 @@ jobs:
             exit 1
           fi
           
-          # 將靜態編譯結果命名後複製到指定路徑
           cp tc/tc ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           
           echo "--- 靜態連結驗證結果 ---"
-          # 驗證是否為靜態連結
           file ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 3: 上傳靜態 TC Binary 作為 Artifact
+      # 步驟 3: 上傳靜態 TC Binary 作為 Artifact (供下載)
       # -----------------------------------------------------------
       - name: Upload Static TC Binary as Artifact
         uses: actions/upload-artifact@v4
@@ -139,7 +136,7 @@ jobs:
           retention-days: 90
           
       # -----------------------------------------------------------
-      # 後續韌體編譯流程 (保持不變)
+      # 後續韌體編譯流程 (與靜態 TC 流程隔離)
       # -----------------------------------------------------------
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
