@@ -33,19 +33,20 @@ jobs:
       - name: Prepare environment
         run: |
           sudo apt update
-          # 1. 安裝編譯 iproute2 所需的依賴 (修正 python3-docdocs 為 python3-docutils)
+          # 1. 安裝編譯 iproute2 所需的依賴
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget
           
-          # 2. 安裝 32-bit 函式庫以支援 OpenWrt 交叉編譯器運行
+          # 2. 安裝 32-bit 函式庫以支援 OpenWrt 交叉編譯器運行 (已包含在您的原腳本中)
           sudo apt install -y libc6-i386 lib32z1
           
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (路徑動態搜尋修正已保留)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (修正了驗證邏輯)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
+        id: toolchain_setup
         run: |
           # 1. 定義 OpenWrt SDK 資訊
-          TOOLCHAIN_VERSION="23.05.2" 
+          TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
           echo "正在下載 OpenWrt SDK..."
@@ -76,12 +77,20 @@ jobs:
           # 3. 匯出 PATH 和 CROSS_COMPILE 到 GitHub 環境
           echo "PATH=$TOOLCHAIN_BIN:$PATH" >> $GITHUB_ENV
           echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
-          echo "IPROUTE2_VERSION=6.7.0" >> $GITHUB_ENV 
+          echo "IPROUTE2_VERSION=6.7.0" >> $GITHUB_ENV  
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
           
           echo "驗證編譯器路徑..."
-          which "${TOOLCHAIN_PREFIX}gcc"
-          "${TOOLCHAIN_PREFIX}gcc" --version
+          # 檢查命令是否存在
+          if ! which "${TOOLCHAIN_PREFIX}gcc"; then
+              echo "::error::錯誤：which 命令找不到 ${TOOLCHAIN_PREFIX}gcc。PATH 設定失敗。"
+              exit 1
+          fi
+          # 執行編譯器並檢查是否成功
+          if ! "${TOOLCHAIN_PREFIX}gcc" --version; then
+              echo "::error::錯誤：編譯器 (${TOOLCHAIN_PREFIX}gcc) 無法執行。請檢查 32 位依賴庫 (libc6-i386) 是否安裝正確。"
+              exit 1
+          fi
           
         shell: bash
         
@@ -100,6 +109,12 @@ jobs:
                SUBDIRS=tc 
           
           mkdir -p ${{ env.TC_STATIC_PATH }}
+          # 檢查 tc 是否編譯成功
+          if [ ! -f "tc/tc" ]; then
+            echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。"
+            exit 1
+          fi
+          
           cp tc/tc ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           
           echo "--- 靜態連結驗證結果 ---"
@@ -112,7 +127,7 @@ jobs:
           name: tc_static_mipsel_${{ env.IPROUTE2_VERSION }}
           path: ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           retention-days: 90
-      
+          
       # -----------------------------------------------------------
       # 原有的韌體編譯流程 (保持不變)
       # -----------------------------------------------------------
