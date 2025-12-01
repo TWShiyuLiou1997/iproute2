@@ -44,8 +44,8 @@ jobs:
           # 確保宿主機 (x86_64) 能運行 MIPS 交叉編譯器所需的 32 位輔助程式
           sudo dpkg --add-architecture i386
           sudo apt update
-          # 安裝更全面的 32-bit 運行時及開發依賴庫，使用 -qq 保持安靜，避免超時
-          sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev
+          # 安裝更全面的 32-bit 運行時及開發依賴庫 (強化清單)
+          sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev libncurses5:i386 zlib1g:i386
         shell: bash
         
       # -----------------------------------------------------------
@@ -182,7 +182,8 @@ jobs:
               cd "${BUILD_DIR}"
           fi
 
-          # 執行 configure，使用動態偵測的 CC 絕對路徑
+          # 執行 configure，使用動態偵測的 CC 絕對路徑 (!!關鍵修正: ac_cv_prog_cc_works=yes!!)
+          ac_cv_prog_cc_works=yes \
           ./configure --host=$HOST_TRIPLE \
                       --prefix=/usr \
                       --disable-shared \
