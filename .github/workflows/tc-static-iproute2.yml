@@ -42,7 +42,7 @@ jobs:
           sudo apt install -y libc6-i386 lib32z1 lib32stdc++6 
           
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (新增下載重試及 STAGING_DIR 修正)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (修正 STAGING_DIR 偵測)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -50,7 +50,7 @@ jobs:
           TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
-          # SDK 下載及解壓重試邏輯
+          # SDK 下載及解壓重試邏輯 (已證明有效)
           MAX_RETRIES=2
           RETRY_COUNT=0
           SDK_DOWNLOAD_URL="https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}"
@@ -63,7 +63,7 @@ jobs:
               mkdir -p sdk
               if tar -Jxf sdk.tar.xz -C sdk --strip-components=1; then
                   echo "SDK 解壓成功。"
-                  break  # 成功，跳出循環
+                  break
               else
                   RETRY_COUNT=$((RETRY_COUNT + 1))
                   if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
@@ -86,15 +86,12 @@ jobs:
           TOOLCHAIN_BIN=$(dirname "$TOOLCHAIN_COMPILER_PATH")
           TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
           
-          # ！！！ 修正點：更穩健地尋找 STAGING_DIR ！！！
-          # STAGING_DIR_ROOT 應為 .../staging_dir
-          STAGING_DIR_ROOT=$(dirname $(dirname "$TOOLCHAIN_COMPILER_PATH"))
-          
-          # 在 staging_dir 內尋找 target-xxx 目錄，作為 STAGING_DIR 的值
-          STAGING_DIR=$(find "$STAGING_DIR_ROOT" -maxdepth 1 -type d -name "target-*" | head -n 1)
+          # ！！！ 修正點：簡化且更穩健地尋找 STAGING_DIR ！！！
+          # 直接在 sdk/staging_dir 內尋找 target-xxx 目錄 (這是最穩健的方法)
+          STAGING_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "target-*" | head -n 1)
           
           if [ -z "$STAGING_DIR" ]; then
-            echo "::error::錯誤：找不到 Target Staging Directory。檢查 SDK 結構是否改變。"
+            echo "::error::錯誤：找不到 Target Staging Directory (在 sdk/staging_dir 內)。"
             exit 1
           fi
           
@@ -154,7 +151,7 @@ jobs:
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
-          # 函數：嘗試下載並設定版本
+          # 函數：嘗試下載並設定版本 (已修正)
           try_download() {
               local version=$1
               if wget "${BASE_URL}iproute2-${version}.tar.xz"; then
@@ -180,7 +177,7 @@ jobs:
           cd iproute2-${VERSION_TO_USE}
 
           # 靜態交叉編譯 tc：
-          # LDFLAGS 新增 -L 和 -lmnl 旗標，指向剛才編譯的 libmnl 靜態函式庫
+          # 確保連結到 libmnl
           make CC="${{ env.CC_FULL_PATH }}" \
                LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
                CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
