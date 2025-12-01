@@ -34,7 +34,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         
-      - name: Prepare environment (Install dependencies)
+      - name: Prepare environment (Install dependencies & Fix C Compiler)
         run: |
           sudo apt update
           # 增加 autoconf/automake 以備 Git 備援方案使用
@@ -44,12 +44,12 @@ jobs:
           # 確保宿主機 (x86_64) 能運行 MIPS 交叉編譯器所需的 32 位輔助程式
           sudo dpkg --add-architecture i386
           sudo apt update
-          # 安裝更全面的 32-bit 運行時及開發依賴庫
-          sudo apt install -y libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev
+          # 安裝更全面的 32-bit 運行時及開發依賴庫，使用 -qq 保持安靜，避免超時
+          sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev
         shell: bash
         
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (修正 STAGING_DIR 偵測)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (修正 STAGING_DIR/CC 路徑偵測)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -57,7 +57,7 @@ jobs:
           TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
-          # SDK 下載及解壓重試邏輯 (已包含除錯判斷)
+          # SDK 下載及解壓重試邏輯
           MAX_RETRIES=2
           RETRY_COUNT=0
           SDK_DOWNLOAD_URL="https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}"
@@ -82,18 +82,25 @@ jobs:
               fi
           done
 
-          # 尋找編譯器絕對路徑 (已包含除錯判斷)
-          TOOLCHAIN_COMPILER_PATH=$(find sdk/staging_dir -type f -name "*gcc" | head -n 1)
+          # 尋找 Toolchain 目錄 (包含 bin 和 lib)
+          TOOLCHAIN_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "toolchain-*" | head -n 1)
+          
+          if [ -z "$TOOLCHAIN_DIR" ]; then
+            echo "::error::錯誤：找不到 Toolchain 目錄。"
+            exit 1
+          fi
+
+          # 尋找編譯器絕對路徑：在正確的 bin 目錄下尋找 gcc
+          TOOLCHAIN_COMPILER_PATH=$(find ${TOOLCHAIN_DIR}/bin -type f -name "*gcc" | head -n 1)
           
           if [ -z "$TOOLCHAIN_COMPILER_PATH" ]; then
             echo "::error::錯誤：找不到編譯器。"
             exit 1
           fi
 
-          TOOLCHAIN_BIN=$(dirname "$TOOLCHAIN_COMPILER_PATH")
           TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
           
-          # 尋找 STAGING_DIR (已包含除錯判斷)
+          # 尋找 STAGING_DIR
           STAGING_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "target-*" | head -n 1)
           
           if [ -z "$STAGING_DIR" ]; then
@@ -108,6 +115,7 @@ jobs:
           echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
           echo "CC_FULL_PATH=$TOOLCHAIN_COMPILER_PATH" >> $GITHUB_ENV
           echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
+          # 優化：將版本號集中在此處定義和匯出
           echo "IPROUTE2_VERSION_LATEST=6.17.0" >> $GITHUB_ENV  
           echo "IPROUTE2_VERSION_FALLBACK=6.8.0" >> $GITHUB_ENV
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
@@ -115,7 +123,7 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (三層下載備援邏輯 - 已調整順序)
+      # 步驟 1.5: 靜態交叉編譯 libmnl (三層下載備援邏輯)
       # -----------------------------------------------------------
       - name: ⚙️ Pre-compile and Install libmnl (三層下載備援)
         run: |
@@ -131,6 +139,7 @@ jobs:
           DOWNLOADED_FILE=""
           VERSION_TO_BUILD=""
           BUILD_DIR=""
+          # 使用環境變數定義 HOST_TRIPLE
           HOST_TRIPLE=$(echo "${{ env.CROSS_COMPILE }}" | sed 's/-$//')
           
           # 1. 嘗試 WGET (最新版本)
@@ -163,7 +172,8 @@ jobs:
               echo "處理 Git 來源..."
               cd "${BUILD_DIR}"
               echo "運行 autogen.sh 生成 configure 文件..."
-              ./autogen.sh
+              # 確保 autogen.sh 成功
+              ./autogen.sh || { echo "::error::autogen.sh 失敗。"; exit 1; }
           else 
               # Tarball 來源 (嘗試 1 或 3)
               echo "處理 Tarball 來源..."
@@ -172,23 +182,23 @@ jobs:
               cd "${BUILD_DIR}"
           fi
 
-          # 執行 configure，設定交叉編譯、禁用共享函式庫、啟用靜態函式庫
+          # 執行 configure，使用動態偵測的 CC 絕對路徑
           ./configure --host=$HOST_TRIPLE \
                       --prefix=/usr \
                       --disable-shared \
                       --enable-static \
                       CC="${{ env.CC_FULL_PATH }}" \
                       CFLAGS="-Os -pipe" \
-                      LDFLAGS=""
+                      LDFLAGS="" || { echo "::error::libmnl configure 失敗。"; exit 1; }
           
-          make
-          # 將靜態函式庫和標頭檔安裝到 SDK 的目標目錄
-          make install DESTDIR="${{ env.STAGING_DIR }}"
+          make || { echo "::error::libmnl make 失敗。"; exit 1; }
+          # 將靜態函式庫和標頭檔安裝到 SDK 的目標目錄 (使用動態偵測的 STAGING_DIR)
+          make install DESTDIR="${{ env.STAGING_DIR }}" || { echo "::error::libmnl install 失敗。"; exit 1; }
           
           echo "libmnl v${VERSION_TO_BUILD} 靜態編譯完成並安裝到 ${{ env.STAGING_DIR }}/usr/lib"
           cd ..
         shell: bash
-        
+
       # -----------------------------------------------------------
       # 步驟 2: 靜態編譯 TC (使用 CC 絕對路徑及 libmnl 連結旗標)
       # -----------------------------------------------------------
@@ -199,9 +209,10 @@ jobs:
           VERSION_TO_USE=""
           ARCHIVE_SUFFIX=""
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
+          # 構造 AR 路徑
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
-          # 函數：嘗試下載並設定版本 (已包含除錯判斷)
+          # 函數：嘗試下載並設定版本
           try_download() {
               local version=$1
               if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then
@@ -213,12 +224,12 @@ jobs:
               return 1
           }
 
-          # 執行下載 (已包含除錯判斷)
+          # 執行下載
           echo "嘗試下載最新版本 iproute2-${LATEST_VERSION}..."
           if ! try_download "${LATEST_VERSION}"; then
               echo "::warning::警告：最新版本 ${LATEST_VERSION} 無法下載。嘗試回退到 ${FALLBACK_VERSION} 版本。"
               if ! try_download "${FALLBACK_VERSION}"; then
-                  echo "::error::錯誤：下載失敗。" ; exit 1
+                  echo "::error::錯誤：iproute2 下載失敗。" ; exit 1
               fi
           fi
 
@@ -231,10 +242,10 @@ jobs:
                LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
                CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
                AR="${AR_FULL_PATH}" \
-               SUBDIRS=tc 
+               SUBDIRS=tc || { echo "::error::tc make 失敗。"; exit 1; }
           
           mkdir -p ${{ env.TC_STATIC_PATH }}
-          # 檢查 tc 執行檔是否成功生成 (已包含除錯判斷)
+          # 檢查 tc 執行檔是否成功生成
           if [ ! -f "tc/tc" ]; then
             echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。"
             exit 1
