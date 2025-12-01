@@ -182,10 +182,16 @@ jobs:
           fi
 
           # 執行 configure，使用動態偵測的 CC 絕對路徑
-          # 【關鍵修正點】：強制設定 config.cache 及環境變數，解決 C 編譯器測試失敗的問題。
+          # 【關鍵修正點】：強制設定 config.cache，全面解決 C 編譯器測試失敗的問題 (跨編譯環境必須)。
+          # 必須涵蓋所有會導致 configure 執行 target binary 失敗的檢查點。
           echo "ac_cv_prog_cc_works=yes" > config.cache
+          echo "ac_cv_prog_cc_c_o=yes" >> config.cache
+          echo "ac_cv_prog_cc_fast_install=yes" >> config.cache
+          echo "ac_cv_prog_ld_target=yes" >> config.cache 
 
-          ac_cv_prog_cc_works=yes ./configure --host=$HOST_TRIPLE \
+          # 移除 configure 參數中冗餘的 ac_cv_prog_cc_works=yes 環境變數設定，
+          # 僅依賴 config.cache 來處理跨編譯的偵測問題，確保 configure 邏輯簡潔。
+          ./configure --host=$HOST_TRIPLE \
                               --prefix=/usr \
                               --disable-shared \
                               --enable-static \
