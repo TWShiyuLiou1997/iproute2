@@ -38,11 +38,11 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils
-          # 修正點：補齊 32-bit C/C++ 運行時依賴，解決未來可能出現的 Error 127 
+          # 修正點：補齊 32-bit C/C++ 運行時依賴，解決 Error 127
           sudo apt install -y libc6-i386 lib32z1 lib32stdc++6 
           
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (新增下載重試邏輯)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (新增下載重試及 STAGING_DIR 修正)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -50,7 +50,7 @@ jobs:
           TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
-          # ！！！ 修正點：新增 SDK 下載及解壓重試邏輯 ！！！
+          # SDK 下載及解壓重試邏輯
           MAX_RETRIES=2
           RETRY_COUNT=0
           SDK_DOWNLOAD_URL="https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}"
@@ -61,18 +61,17 @@ jobs:
               
               echo "解壓工具鏈..."
               mkdir -p sdk
-              # 使用 -Jxf 顯式指定 XZ 格式，增加穩健性
               if tar -Jxf sdk.tar.xz -C sdk --strip-components=1; then
                   echo "SDK 解壓成功。"
                   break  # 成功，跳出循環
               else
                   RETRY_COUNT=$((RETRY_COUNT + 1))
                   if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-                      echo "::error::錯誤：SDK 下載及解壓在 ${MAX_RETRIES} 次嘗試後仍失敗。請檢查網路或 URL。"
+                      echo "::error::錯誤：SDK 下載及解壓在 ${MAX_RETRIES} 次嘗試後仍失敗。"
                       exit 1
                   fi
-                  echo "::warning::警告：解壓失敗 (可能檔案損壞)。清理並重試..."
-                  rm -rf sdk sdk.tar.xz # 清理並重試
+                  echo "::warning::警告：解壓失敗。清理並重試..."
+                  rm -rf sdk sdk.tar.xz 
               fi
           done
 
@@ -87,11 +86,15 @@ jobs:
           TOOLCHAIN_BIN=$(dirname "$TOOLCHAIN_COMPILER_PATH")
           TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
           
-          # 尋找 STAGING_DIR (MIPS Target Libs/Headers) 的根目錄
-          STAGING_DIR=$(dirname $(dirname "$TOOLCHAIN_COMPILER_PATH") | grep -o '.*staging_dir/target-.*')
+          # ！！！ 修正點：更穩健地尋找 STAGING_DIR ！！！
+          # STAGING_DIR_ROOT 應為 .../staging_dir
+          STAGING_DIR_ROOT=$(dirname $(dirname "$TOOLCHAIN_COMPILER_PATH"))
+          
+          # 在 staging_dir 內尋找 target-xxx 目錄，作為 STAGING_DIR 的值
+          STAGING_DIR=$(find "$STAGING_DIR_ROOT" -maxdepth 1 -type d -name "target-*" | head -n 1)
           
           if [ -z "$STAGING_DIR" ]; then
-            echo "::error::錯誤：找不到 Target Staging Directory。"
+            echo "::error::錯誤：找不到 Target Staging Directory。檢查 SDK 結構是否改變。"
             exit 1
           fi
           
@@ -115,7 +118,7 @@ jobs:
         run: |
           LIBMNL_VERSION="1.2.0"
           LIBMNL_URL="https://netfilter.org/projects/libmnl/files/libmnl-${LIBMNL_VERSION}.tar.bz2"
-          HOST_TRIPLE=$(echo "${{ env.CROSS_COMPILE }}" | sed 's/-$//') # mipsel-openwrt-linux-musl
+          HOST_TRIPLE=$(echo "${{ env.CROSS_COMPILE }}" | sed 's/-$//')
 
           echo "下載 libmnl v${LIBMNL_VERSION}..."
           wget "${LIBMNL_URL}"
