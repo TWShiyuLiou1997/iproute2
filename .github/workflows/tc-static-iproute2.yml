@@ -39,9 +39,15 @@ jobs:
           sudo apt update
           # 增加 autoconf/automake 以備 Git 備援方案使用
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils autoconf automake
-          # 修正點：補齊 32-bit C/C++ 運行時依賴，解決 Error 127
-          sudo apt install -y libc6-i386 lib32z1 lib32stdc++6 
           
+          # 【關鍵修正】解決 C Compiler cannot create executables (Error 77)
+          # 確保宿主機 (x86_64) 能運行 MIPS 交叉編譯器所需的 32 位輔助程式
+          sudo dpkg --add-architecture i386
+          sudo apt update
+          # 安裝更全面的 32-bit 運行時及開發依賴庫
+          sudo apt install -y libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev
+        shell: bash
+        
       # -----------------------------------------------------------
       # 步驟 1: 下載並設定 MIPS 交叉編譯器 (修正 STAGING_DIR 偵測)
       # -----------------------------------------------------------
@@ -51,7 +57,7 @@ jobs:
           TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
-          # SDK 下載及解壓重試邏輯 
+          # SDK 下載及解壓重試邏輯 (已包含除錯判斷)
           MAX_RETRIES=2
           RETRY_COUNT=0
           SDK_DOWNLOAD_URL="https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}"
@@ -76,7 +82,7 @@ jobs:
               fi
           done
 
-          # 尋找編譯器絕對路徑
+          # 尋找編譯器絕對路徑 (已包含除錯判斷)
           TOOLCHAIN_COMPILER_PATH=$(find sdk/staging_dir -type f -name "*gcc" | head -n 1)
           
           if [ -z "$TOOLCHAIN_COMPILER_PATH" ]; then
@@ -87,7 +93,7 @@ jobs:
           TOOLCHAIN_BIN=$(dirname "$TOOLCHAIN_COMPILER_PATH")
           TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
           
-          # ！！！ 修正點：簡化且更穩健地尋找 STAGING_DIR ！！！
+          # 尋找 STAGING_DIR (已包含除錯判斷)
           STAGING_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "target-*" | head -n 1)
           
           if [ -z "$STAGING_DIR" ]; then
@@ -114,13 +120,13 @@ jobs:
       - name: ⚙️ Pre-compile and Install libmnl (三層下載備援)
         run: |
           # 定義所有版本和路徑
-          VERSION_TARGET="1.2.7" 
-          VERSION_FALLBACK_KNOWN="1.0.5" # 用戶提供的舊版本
+          VERSION_TARGET="1.2.7"  
+          VERSION_FALLBACK_KNOWN="1.0.5"
           
           URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
           URL_FALLBACK="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_FALLBACK_KNOWN}.tar.bz2"
           LIBMNL_REPO="https://git.netfilter.org/libmnl.git"
-          CLONE_DIR="libmnl-source" # Git Clone 的目標目錄
+          CLONE_DIR="libmnl-source"
           
           DOWNLOADED_FILE=""
           VERSION_TO_BUILD=""
@@ -133,11 +139,11 @@ jobs:
               DOWNLOADED_FILE="libmnl-target.tar.xz"
               VERSION_TO_BUILD="${VERSION_TARGET}"
           
-          # 2. 嘗試 Git Clone (新的備援 1)
+          # 2. 嘗試 Git Clone (新的備援 1 - 高優先級)
           elif git clone --depth 1 "${LIBMNL_REPO}" "${CLONE_DIR}" 2>/dev/null; then
               echo "✅ WGET 下載失敗。執行 (2/3) Git 倉庫備援下載 (最新 Master HEAD)。"
               VERSION_TO_BUILD="${VERSION_TARGET}-git"
-              BUILD_DIR="${CLONE_DIR}" # Git Clone 的目錄
+              BUILD_DIR="${CLONE_DIR}"
               
           # 3. 嘗試 WGET (用戶提供版本 - 新的備援 2)
           elif wget -nv "${URL_FALLBACK}" -O "libmnl-fallback.tar.bz2" 2>/dev/null; then
@@ -153,7 +159,7 @@ jobs:
 
           # 準備編譯目錄並進入
           if [ "${VERSION_TO_BUILD}" == "${VERSION_TARGET}-git" ]; then
-              # Git 來源
+              # Git 來源 (需要 autogen.sh)
               echo "處理 Git 來源..."
               cd "${BUILD_DIR}"
               echo "運行 autogen.sh 生成 configure 文件..."
@@ -162,7 +168,7 @@ jobs:
               # Tarball 來源 (嘗試 1 或 3)
               echo "處理 Tarball 來源..."
               tar -xf "${DOWNLOADED_FILE}"
-              BUILD_DIR="libmnl-${VERSION_TO_BUILD}" # Tarball 解壓後的目錄名稱
+              BUILD_DIR="libmnl-${VERSION_TO_BUILD}"
               cd "${BUILD_DIR}"
           fi
 
@@ -195,21 +201,19 @@ jobs:
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
-          # 函數：嘗試下載並設定版本 
+          # 函數：嘗試下載並設定版本 (已包含除錯判斷)
           try_download() {
               local version=$1
-              # 優先嘗試 .tar.xz
-              if wget "${BASE_URL}iproute2-${version}.tar.xz"; then
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then
                   VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.xz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX}) - 優先使用。"; return 0
               fi
-              # 回退嘗試 .tar.gz
-              if wget "${BASE_URL}iproute2-${version}.tar.gz"; then
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.gz"; then
                   VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.gz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX})。" ; return 0
               fi
               return 1
           }
 
-          # 執行下載
+          # 執行下載 (已包含除錯判斷)
           echo "嘗試下載最新版本 iproute2-${LATEST_VERSION}..."
           if ! try_download "${LATEST_VERSION}"; then
               echo "::warning::警告：最新版本 ${LATEST_VERSION} 無法下載。嘗試回退到 ${FALLBACK_VERSION} 版本。"
@@ -223,7 +227,6 @@ jobs:
           cd iproute2-${VERSION_TO_USE}
 
           # 靜態交叉編譯 tc：
-          # 確保連結到 libmnl (這裡會自動連結到步驟 1.5 安裝在 STAGING_DIR 的靜態 libmnl)
           make CC="${{ env.CC_FULL_PATH }}" \
                LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
                CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
@@ -231,6 +234,7 @@ jobs:
                SUBDIRS=tc 
           
           mkdir -p ${{ env.TC_STATIC_PATH }}
+          # 檢查 tc 執行檔是否成功生成 (已包含除錯判斷)
           if [ ! -f "tc/tc" ]; then
             echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。"
             exit 1
