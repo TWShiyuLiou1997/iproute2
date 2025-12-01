@@ -181,12 +181,15 @@ jobs:
               cd "${BUILD_DIR}"
           fi
 
-          # 執行 configure，使用動態偵測的 CC 絕對路徑 (!!關鍵修正: 確保 ac_cv_prog_cc_works=yes 存在!!)
-          ac_cv_prog_cc_works=yes \
+          # 執行 configure，使用動態偵測的 CC 絕對路徑
+          # 【最終修正】強制設定 config.cache，避免交叉編譯時的 C 編譯器測試失敗
+          echo "ac_cv_prog_cc_works=yes" > config.cache
+
           ./configure --host=$HOST_TRIPLE \
                       --prefix=/usr \
                       --disable-shared \
                       --enable-static \
+                      --cache-file=config.cache \
                       CC="${{ env.CC_FULL_PATH }}" \
                       CFLAGS="-Os -pipe" \
                       LDFLAGS="" || { echo "::error::libmnl configure 失敗。"; exit 1; }
