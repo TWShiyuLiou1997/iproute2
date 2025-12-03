@@ -44,7 +44,7 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt update
           # 安裝 32-bit 運行時及開發依賴庫 (已移除 libncurses5:i386)
-          sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
+          sudo apt install -y -qq libc6-i32 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
         shell: bash
         
       # -----------------------------------------------------------
@@ -122,9 +122,9 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制設定 CC/CFLAGS/LDFLAGS)
+      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制設定 CC/CFLAGS/LDFLAGS 及 LDFLAGS 增加 -static)
       # -----------------------------------------------------------
-      - name: ⚙️ Pre-compile and Install libmnl (最終修正：強制設定 CC/CFLAGS/LDFLAGS)
+      - name: ⚙️ Pre-compile and Install libmnl (最終修正：強制設定 CC/CFLAGS/LDFLAGS 及 LDFLAGS 增加 -static)
         run: |
           # --- 變數定義與準備 ---
           VERSION_TARGET="1.2.7"  
@@ -148,7 +148,8 @@ jobs:
           # 同時設定 LDFLAGS/CFLAGS 指向 STAGING_DIR，並確保 -static 連結
           export CC="${{ env.CC_FULL_PATH }}"
           export CFLAGS="-Os -pipe -I${{ env.STAGING_DIR }}/usr/include"
-          export LDFLAGS="-L${{ env.STAGING_DIR }}/usr/lib"
+          # *** 新增 -static 旗標 ***
+          export LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib"
 
           # --- 下載與備援邏輯 ---
           echo "嘗試 (1/3) WGET 下載最新版本 v${VERSION_TARGET}..."
@@ -195,7 +196,6 @@ jobs:
 
           echo "執行 configure..."
           # 關鍵修正：確保 configure 腳本使用環境變數中的 CC、CFLAGS、LDFLAGS
-          # 移除 configure 參數中的 CC/CFLAGS/LDFLAGS，因為它們已經被 export 到環境變數中
           ./configure --host=$HOST_TRIPLE \
                       --build=$BUILD_TRIPLE \
                       --prefix=/usr \
@@ -203,6 +203,7 @@ jobs:
                       --enable-static \
                       --cache-file=config.cache || { echo "::error::libmnl configure 失敗。"; exit 1; }
           
+          # make 階段會使用到我們在環境變數中設定的 LDFLAGS="-static ..."
           make || { echo "::error::libmnl make 失敗。"; exit 1; }
           make install DESTDIR="${{ env.STAGING_DIR }}" || { echo "::error::libmnl install 失敗。"; exit 1; }
           
