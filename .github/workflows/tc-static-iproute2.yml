@@ -1,6 +1,6 @@
 name: CI with Static TC Build
 
-# 定義觸發條件 (此處不變，已經很完善)
+# 定義觸發條件
 on:
   push:
     paths-ignore:
@@ -19,7 +19,6 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
-    # 當事件為 push 且引用是 tag 時不執行此工作 (通常 tag push 應該觸發 release upload)
     if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
     env:
       build_variant: ${{ matrix.build_variant }}
@@ -49,7 +48,7 @@ jobs:
         shell: bash
         
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (修正 STAGING_DIR/CC 路徑偵測)
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -57,7 +56,7 @@ jobs:
           TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
-          # SDK 下載及解壓重試邏輯 (已很完善)
+          # SDK 下載及解壓重試邏輯
           MAX_RETRIES=2
           RETRY_COUNT=0
           SDK_DOWNLOAD_URL="https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}"
@@ -81,9 +80,6 @@ jobs:
                   rm -rf sdk sdk.tar.xz  
               fi
           done
-
-          # 【優化】下載成功後立即清理下載的壓縮檔
-          rm -f sdk.tar.xz
 
           # 尋找 Toolchain 目錄 (包含 bin 和 lib)
           TOOLCHAIN_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "toolchain-*" | head -n 1)
@@ -126,9 +122,9 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (已是最佳修正)
+      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：加入 ac_cv_sizeof_int 等尺寸變數)
       # -----------------------------------------------------------
-      - name: ⚙️ Pre-compile and Install libmnl
+      - name: ⚙️ Pre-compile and Install libmnl (最終修正：加入 ac_cv_sizeof_int 等尺寸變數)
         run: |
           # --- 變數定義與準備 ---
           VERSION_TARGET="1.2.7"  
@@ -140,7 +136,7 @@ jobs:
           
           # 1. 動態從 CC 路徑推導出 HOST_TRIPLE
           HOST_TRIPLE=$(basename "${{ env.CC_FULL_PATH }}" | sed 's/gcc$//' | sed 's/[-]$//')
-          BUILD_TRIPLE=$(/usr/share/misc/config.guess)  
+          BUILD_TRIPLE=$(/usr/share/misc/config.guess) 
           
           echo "偵測到 HOST_TRIPLE: $HOST_TRIPLE"
           echo "偵測到 BUILD_TRIPLE: $BUILD_TRIPLE"
@@ -187,18 +183,20 @@ jobs:
               tar -xf "${DOWNLOADED_FILE}"
               BUILD_DIR="libmnl-${VERSION_TO_BUILD}"
               cd "${BUILD_DIR}"
-              # 【優化】清理下載的壓縮檔
-              rm -f ../"${DOWNLOADED_FILE}"
           fi
 
           # --- 執行 configure (關鍵修正區) ---
-          # 加入關鍵的 ac_cv_c_compiler_runs=yes 繞過交叉編譯器測試
+          # 確保 config.cache 設定存在，包含所有強制通過旗標
           echo "ac_cv_prog_cc_works=yes" > config.cache
           echo "ac_cv_prog_cc_c_o=yes" >> config.cache
           echo "ac_cv_prog_cc_fast_install=yes" >> config.cache
           echo "ac_cv_prog_ld_target=yes" >> config.cache
           echo "ac_cv_prog_cc_cross_compile=yes" >> config.cache
           echo "ac_cv_c_compiler_runs=yes" >> config.cache
+          # *** 最終核心修正：強制設定 MIPS 架構的常見資料類型大小 ***
+          echo "ac_cv_sizeof_int=4" >> config.cache
+          echo "ac_cv_sizeof_long=4" >> config.cache
+          echo "ac_cv_sizeof_void_p=4" >> config.cache
 
           echo "執行 configure..."
           ./configure --host=$HOST_TRIPLE \
@@ -216,7 +214,7 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 2: 靜態編譯 TC (已是最佳修正)
+      # 步驟 2: 靜態編譯 TC (使用 CC 絕對路徑及 libmnl 連結旗標)
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
@@ -228,7 +226,7 @@ jobs:
           # 構造 AR 路徑 (e.g., mipsel-openwrt-linux-musl-ar)
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
-          # 函數：嘗試下載並設定版本 (已很完善)
+          # 函數：嘗試下載並設定版本
           try_download() {
               local version=$1
               if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then
@@ -250,13 +248,11 @@ jobs:
           fi
 
           # 解壓
-          ARCHIVE_FILE="iproute2-${VERSION_TO_USE}${ARCHIVE_SUFFIX}"
-          tar -xf "${ARCHIVE_FILE}"
-          # 【優化】清理下載的壓縮檔
-          rm -f "${ARCHIVE_FILE}"
+          tar -xf iproute2-${VERSION_TO_USE}${ARCHIVE_SUFFIX}
           cd iproute2-${VERSION_TO_USE}
 
           # 靜態交叉編譯 tc：
+          # 使用 LDFLAGS="-static -L... -lmnl" 來強制靜態連結 libmnl
           make CC="${{ env.CC_FULL_PATH }}" \
                LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
                CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
@@ -290,7 +286,7 @@ jobs:
           retention-days: 90
           
       # -----------------------------------------------------------
-      # 後續韌體編譯流程 (增加腳本存在性檢查)
+      # 後續韌體編譯流程
       # -----------------------------------------------------------
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
@@ -300,16 +296,6 @@ jobs:
           
       - name: Start build
         run: |
-          # 【健壯性檢查】確認自訂腳本存在
-          if [ ! -f "trunk/build_firmware_ci" ]; then
-            echo "::error::錯誤：自訂編譯腳本 trunk/build_firmware_ci 不存在。"
-            exit 1
-          fi
-          if [ ! -f "trunk/clear_tree_simple" ]; then
-            echo "::error::錯誤：自訂清理腳本 trunk/clear_tree_simple 不存在。"
-            exit 1
-          fi
-
           cd trunk
           mkdir -p ${images_dir}
           for m in $targets; do  
@@ -340,9 +326,7 @@ jobs:
           path: ${{ env.images_dir }}/*.7z
           
       - name: Upload images to Releases
-        # 【關鍵邏輯修正】只有當 release 事件發生時，才使用此 Action 上傳到 Release Tag。
-        # 原本的條件 'github.event_name != 'release'' 會導致在 release 事件時跳過此步驟。
-        if: ${{ github.event_name == 'release' && success() }}
+        if: ${{ github.event_name != 'release' && success() }}
         uses: svenstaro/upload-release-action@2.2.0
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
