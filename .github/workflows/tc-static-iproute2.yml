@@ -122,9 +122,9 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：加入 ac_cv_sizeof_int 等尺寸變數)
+      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：將強制變數轉為命令行參數)
       # -----------------------------------------------------------
-      - name: ⚙️ Pre-compile and Install libmnl (最終修正：加入 ac_cv_sizeof_int 等尺寸變數)
+      - name: ⚙️ Pre-compile and Install libmnl (最終修正：將強制變數轉為命令行參數)
         run: |
           # --- 變數定義與準備 ---
           VERSION_TARGET="1.2.7"  
@@ -186,25 +186,23 @@ jobs:
           fi
 
           # --- 執行 configure (關鍵修正區) ---
-          # 確保 config.cache 設定存在，包含所有強制通過旗標
-          echo "ac_cv_prog_cc_works=yes" > config.cache
-          echo "ac_cv_prog_cc_c_o=yes" >> config.cache
-          echo "ac_cv_prog_cc_fast_install=yes" >> config.cache
-          echo "ac_cv_prog_ld_target=yes" >> config.cache
-          echo "ac_cv_prog_cc_cross_compile=yes" >> config.cache
-          echo "ac_cv_c_compiler_runs=yes" >> config.cache
-          # *** 最終核心修正：強制設定 MIPS 架構的常見資料類型大小 ***
-          echo "ac_cv_sizeof_int=4" >> config.cache
-          echo "ac_cv_sizeof_long=4" >> config.cache
-          echo "ac_cv_sizeof_void_p=4" >> config.cache
-
+          # 🚨 最終修正：將所有強制變數直接作為 configure 命令行參數傳入，以覆蓋 configure 腳本的內建檢查。
+          
           echo "執行 configure..."
           ./configure --host=$HOST_TRIPLE \
                       --build=$BUILD_TRIPLE \
                       --prefix=/usr \
                       --disable-shared \
                       --enable-static \
-                      --cache-file=config.cache || { echo "::error::libmnl configure 失敗。"; exit 1; }
+                      ac_cv_prog_cc_works=yes \
+                      ac_cv_prog_cc_c_o=yes \
+                      ac_cv_prog_cc_fast_install=yes \
+                      ac_cv_prog_ld_target=yes \
+                      ac_cv_prog_cc_cross_compile=yes \
+                      ac_cv_c_compiler_runs=yes \
+                      ac_cv_sizeof_int=4 \
+                      ac_cv_sizeof_long=4 \
+                      ac_cv_sizeof_void_p=4 || { echo "::error::libmnl configure 失敗。"; exit 1; }
           
           make || { echo "::error::libmnl make 失敗。"; exit 1; }
           make install DESTDIR="${{ env.STAGING_DIR }}" || { echo "::error::libmnl install 失敗。"; exit 1; }
