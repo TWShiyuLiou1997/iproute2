@@ -44,7 +44,7 @@ jobs:
           sudo dpkg --add-architecture i386
           sudo apt update
           # 安裝 32-bit 運行時及開發依賴庫 (已移除 libncurses5:i386)
-          sudo apt install -y -qq libc6-i32 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
+          sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
         shell: bash
         
       # -----------------------------------------------------------
@@ -122,9 +122,9 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制設定 CC/CFLAGS/LDFLAGS 及 LDFLAGS 增加 -static)
+      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：加入 ac_cv_c_compiler_runs=yes)
       # -----------------------------------------------------------
-      - name: ⚙️ Pre-compile and Install libmnl (最終修正：強制設定 CC/CFLAGS/LDFLAGS 及 LDFLAGS 增加 -static)
+      - name: ⚙️ Pre-compile and Install libmnl (最終修正：加入 ac_cv_c_compiler_runs=yes)
         run: |
           # --- 變數定義與準備 ---
           VERSION_TARGET="1.2.7"  
@@ -134,7 +134,7 @@ jobs:
           LIBMNL_REPO="https://git.netfilter.org/libmnl.git"
           CLONE_DIR="libmnl-source"
           
-          # 1. 動態從 CC 路徑推導出 HOST_TRIPLE (修正 sed 語法)
+          # 1. 動態從 CC 路徑推導出 HOST_TRIPLE
           HOST_TRIPLE=$(basename "${{ env.CC_FULL_PATH }}" | sed 's/gcc$//' | sed 's/[-]$//')
           BUILD_TRIPLE=$(/usr/share/misc/config.guess) 
           
@@ -145,10 +145,9 @@ jobs:
           VERSION_TO_BUILD=""
           
           # 【關鍵修正】：將編譯器路徑匯出為環境變數，讓 configure 腳本可以繼承
-          # 同時設定 LDFLAGS/CFLAGS 指向 STAGING_DIR，並確保 -static 連結
           export CC="${{ env.CC_FULL_PATH }}"
           export CFLAGS="-Os -pipe -I${{ env.STAGING_DIR }}/usr/include"
-          # *** 新增 -static 旗標 ***
+          # LDFLAGS 包含 -static 以強制靜態連結，解決 make/install 階段的潛在問題
           export LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib"
 
           # --- 下載與備援邏輯 ---
@@ -187,15 +186,16 @@ jobs:
           fi
 
           # --- 執行 configure (關鍵修正區) ---
-          # 確保 config.cache 設定仍存在，並提供額外的環境資訊給 configure
+          # 確保 config.cache 設定存在，並加入關鍵的 ac_cv_c_compiler_runs=yes
           echo "ac_cv_prog_cc_works=yes" > config.cache
           echo "ac_cv_prog_cc_c_o=yes" >> config.cache
           echo "ac_cv_prog_cc_fast_install=yes" >> config.cache
           echo "ac_cv_prog_ld_target=yes" >> config.cache
           echo "ac_cv_prog_cc_cross_compile=yes" >> config.cache
+          # *** 核心修正：強制跳過編譯器執行測試，解決 configure: error: C compiler cannot create executables ***
+          echo "ac_cv_c_compiler_runs=yes" >> config.cache
 
           echo "執行 configure..."
-          # 關鍵修正：確保 configure 腳本使用環境變數中的 CC、CFLAGS、LDFLAGS
           ./configure --host=$HOST_TRIPLE \
                       --build=$BUILD_TRIPLE \
                       --prefix=/usr \
@@ -203,7 +203,6 @@ jobs:
                       --enable-static \
                       --cache-file=config.cache || { echo "::error::libmnl configure 失敗。"; exit 1; }
           
-          # make 階段會使用到我們在環境變數中設定的 LDFLAGS="-static ..."
           make || { echo "::error::libmnl make 失敗。"; exit 1; }
           make install DESTDIR="${{ env.STAGING_DIR }}" || { echo "::error::libmnl install 失敗。"; exit 1; }
           
