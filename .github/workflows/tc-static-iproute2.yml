@@ -46,6 +46,8 @@ jobs:
           sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
         shell: bash
         
+      ---
+      
       # -----------------------------------------------------------
       # 步驟 1: 下載並設定 MIPS 交叉編譯器
       # -----------------------------------------------------------
@@ -103,6 +105,8 @@ jobs:
           
         shell: bash
 
+      ---
+      
       # -----------------------------------------------------------
       # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制 GCC Sysroot)
       # -----------------------------------------------------------
@@ -110,6 +114,7 @@ jobs:
         run: |
           # --- 變數定義與準備 ---
           VERSION_TARGET="1.2.7"  
+          # 原始下載 URL 返回 404 (curl: (22) The requested URL returned error: 404)，但腳本已備援使用 Git
           URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
           LIBMNL_REPO="https://git.netfilter.org/libmnl.git"
           CLONE_DIR="libmnl-source"
@@ -168,7 +173,9 @@ jobs:
           
           cd ..
         shell: bash
-        
+
+      ---
+
       # -----------------------------------------------------------
       # 步驟 2: 靜態編譯 TC (iproute2)
       # -----------------------------------------------------------
@@ -226,6 +233,8 @@ jobs:
           echo "IPROUTE2_VERSION=${VERSION_TO_USE}" >> $GITHUB_ENV
 
         shell: bash
+
+      ---
 
       # -----------------------------------------------------------
       # 步驟 3: 上傳靜態 TC Binary 作為 Artifact
