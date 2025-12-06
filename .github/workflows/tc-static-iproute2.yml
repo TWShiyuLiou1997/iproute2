@@ -82,7 +82,8 @@ jobs:
 
           # 尋找 Toolchain 目錄
           TOOLCHAIN_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "toolchain-*" | head -n 1)
-          if [ -z "$TOOLCHAIN_DIR" ]; then echo "::error::錯誤：找不到 Toolchain 目錄。"; exit 1; 對 fi
+          # 💥 修正：將 '對 fi' 改為 'fi'
+          if [ -z "$TOOLCHAIN_DIR" ]; then echo "::error::錯誤：找不到 Toolchain 目錄。"; exit 1; fi
 
           # 尋找編譯器絕對路徑
           TOOLCHAIN_COMPILER_PATH=$(find ${TOOLCHAIN_DIR}/bin -type f -name "*gcc" | head -n 1)
