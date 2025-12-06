@@ -104,7 +104,7 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正版，使用 ECHO 避免 EOF 錯誤)
+      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：使用 ECHO 創建 cache 並強制 configure 旗標)
       # -----------------------------------------------------------
       - name: ⚙️ Pre-compile and Install libmnl (最終修正)
         run: |
@@ -124,7 +124,6 @@ jobs:
 
           # 匯出交叉編譯器與 Flags
           export CC="${{ env.CC_FULL_PATH }}"
-          # CFLAGS 和 LDFLAGS 不再包含 --sysroot 避免與 configure 衝突
           export CFLAGS="-Os -pipe -I${{ env.STAGING_DIR }}/usr/include"
           export LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib"
 
@@ -151,7 +150,7 @@ jobs:
               cd "${BUILD_DIR}"
           fi
           
-          # --- 使用 ECHO 創建 config.cache，避免 <<EOF 縮排問題 ---
+          # 🚨 關鍵修正：使用 ECHO 創建 config.cache，避免 <<EOF 縮排和換行符問題
           echo "ac_cv_prog_cc_works=yes" > config.cache
           echo "ac_cv_prog_cc_c_o=yes" >> config.cache
           echo "ac_cv_prog_cc_fast_install=yes" >> config.cache
@@ -162,14 +161,17 @@ jobs:
           echo "ac_cv_sizeof_long=4" >> config.cache
           echo "ac_cv_sizeof_void_p=4" >> config.cache
 
-          # 執行 configure，使用 --cache-file 和 --with-sysroot
+          echo "執行 configure..."
+          # 在 configure 命令行中重複強制旗標，確保成功覆蓋
           ./configure --host=$HOST_TRIPLE \
                       --build=$BUILD_TRIPLE \
                       --prefix=/usr \
                       --disable-shared \
                       --enable-static \
                       --cache-file=config.cache \
-                      --with-sysroot="${{ env.STAGING_DIR }}" || { echo "::error::libmnl configure 失敗。"; exit 1; }
+                      --with-sysroot="${{ env.STAGING_DIR }}" \
+                      ac_cv_prog_cc_works=yes \
+                      ac_cv_c_compiler_runs=yes || { echo "::error::libmnl configure 失敗。"; exit 1; }
           
           make || { echo "::error::libmnl make 失敗。"; exit 1; }
           # 使用 DESTDIR 安裝到 staging 目錄
@@ -179,7 +181,7 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 2: 靜態編譯 TC (L154 附近修正點)
+      # 步驟 2: 靜態編譯 TC
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
@@ -190,7 +192,7 @@ jobs:
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
-          # 函數：嘗試下載並設定版本 (L154 在這個區塊內，已修正為標準 Shell 語法)
+          # 函數：嘗試下載並設定版本 
           try_download() {
               local version=$1
               if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then
