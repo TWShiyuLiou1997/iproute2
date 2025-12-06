@@ -37,18 +37,15 @@ jobs:
       - name: Prepare environment (Install dependencies & Fix C Compiler)
         run: |
           sudo apt update
-          # 增加 autoconf/automake 以備 Git 備援方案使用
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils autoconf automake
           
-          # 【修正】確保宿主機 (x86_64) 能運行 MIPS 交叉編譯器所需的 32 位輔助程式
           sudo dpkg --add-architecture i386
           sudo apt update
-          # 安裝 32-bit 運行時及開發依賴庫
           sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
         shell: bash
         
       # -----------------------------------------------------------
-      # 步驟 1: 下載並設定 MIPS 交叉編譯器 (修正 STAGING_DIR/CC 路徑偵測)
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器
       # -----------------------------------------------------------
       - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
         id: toolchain_setup
@@ -56,7 +53,6 @@ jobs:
           TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
-          # SDK 下載及解壓重試邏輯
           MAX_RETRIES=2
           RETRY_COUNT=0
           SDK_DOWNLOAD_URL="https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}"
@@ -81,40 +77,20 @@ jobs:
               fi
           done
 
-          # 尋找 Toolchain 目錄 (包含 bin 和 lib)
           TOOLCHAIN_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "toolchain-*" | head -n 1)
-          
-          if [ -z "$TOOLCHAIN_DIR" ]; then
-            echo "::error::錯誤：找不到 Toolchain 目錄。"
-            exit 1
-          fi
+          if [ -z "$TOOLCHAIN_DIR" ]; then echo "::error::錯誤：找不到 Toolchain 目錄。"; exit 1; fi
 
-          # 尋找編譯器絕對路徑：在正確的 bin 目錄下尋找 gcc
           TOOLCHAIN_COMPILER_PATH=$(find ${TOOLCHAIN_DIR}/bin -type f -name "*gcc" | head -n 1)
-          
-          if [ -z "$TOOLCHAIN_COMPILER_PATH" ]; then
-            echo "::error::錯誤：找不到編譯器。"
-            exit 1
-          fi
+          if [ -z "$TOOLCHAIN_COMPILER_PATH" ]; then echo "::error::錯誤：找不到編譯器。"; exit 1; fi
 
           TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
           
-          # 尋找 STAGING_DIR
           STAGING_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "target-*" | head -n 1)
+          if [ -z "$STAGING_DIR" ]; then echo "::error::錯誤：找不到 Target Staging Directory (在 sdk/staging_dir 內)。"; exit 1; fi
           
-          if [ -z "$STAGING_DIR" ]; then
-            echo "::error::錯誤：找不到 Target Staging Directory (在 sdk/staging_dir 內)。"
-            exit 1
-          fi
-          
-          echo "偵測到的工具鏈前綴: ${TOOLCHAIN_PREFIX}"
-          echo "偵測到的 Staging Dir: ${STAGING_DIR}"
-
-          # 匯出所有環境變數
           echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
           echo "CC_FULL_PATH=$TOOLCHAIN_COMPILER_PATH" >> $GITHUB_ENV
           echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
-          # 優化：將版本號集中在此處定義和匯出
           echo "IPROUTE2_VERSION_LATEST=6.17.0" >> $GITHUB_ENV  
           echo "IPROUTE2_VERSION_FALLBACK=6.8.0" >> $GITHUB_ENV
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
@@ -122,11 +98,10 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (修正版：加入 sysroot 與禁用 examples)
+      # 步驟 1.5: 靜態交叉編譯 libmnl
       # -----------------------------------------------------------
       - name: ⚙️ Pre-compile and Install libmnl (修正版)
         run: |
-          # --- 變數定義與準備 ---
           VERSION_TARGET="1.2.7"
           VERSION_FALLBACK_KNOWN="1.0.5"
           URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
@@ -137,58 +112,42 @@ jobs:
           HOST_TRIPLE=$(basename "${{ env.CC_FULL_PATH }}" | sed 's/gcc$//' | sed 's/[-]$//')
           BUILD_TRIPLE=$(/usr/share/misc/config.guess)
 
-          echo "偵測到 HOST_TRIPLE: $HOST_TRIPLE"
-          echo "偵測到 BUILD_TRIPLE: $BUILD_TRIPLE"
-
           DOWNLOADED_FILE=""
           VERSION_TO_BUILD=""
 
-          # 匯出交叉編譯器與 sysroot
           export CC="${{ env.CC_FULL_PATH }}"
           export SYSROOT="${{ env.STAGING_DIR }}"
-          # 新增 --sysroot 旗標
           export CFLAGS="--sysroot=$SYSROOT -Os -pipe -I$SYSROOT/usr/include"
           export LDFLAGS="--sysroot=$SYSROOT -static -L$SYSROOT/usr/lib"
 
           # --- 下載與備援邏輯 ---
-          echo "嘗試 (1/3) WGET 下載最新版本 v${VERSION_TARGET}..."
           if wget -nv "${URL_TARGET}" -O "libmnl-target.tar.xz" 2>/dev/null; then
               DOWNLOADED_FILE="libmnl-target.tar.xz"
               VERSION_TO_BUILD="${VERSION_TARGET}"
-
           elif git clone --depth 1 "${LIBMNL_REPO}" "${CLONE_DIR}" 2>/dev/null; then
-              echo "✅ WGET 下載失敗。執行 (2/3) Git 倉庫備援下載 (最新 Master HEAD)。"
               VERSION_TO_BUILD="${VERSION_TARGET}-git"
-
           elif wget -nv "${URL_FALLBACK}" -O "libmnl-fallback.tar.bz2" 2>/dev/null; then
-              echo "⚠️ Git 下載失敗。執行 (3/3) 嘗試下載用戶提供的舊版 v${VERSION_FALLBACK_KNOWN}。"
               DOWNLOADED_FILE="libmnl-fallback.tar.bz2"
               VERSION_TO_BUILD="${VERSION_FALLBACK_KNOWN}"
-
           else
-              echo "::error::錯誤：所有下載嘗試均失敗。"
-              exit 1
+              echo "::error::錯誤：所有下載嘗試均失敗。" ; exit 1
           fi
 
           # --- 準備編譯目錄並進入 ---
           if [ "${VERSION_TO_BUILD}" == "${VERSION_TARGET}-git" ]; then
-              echo "處理 Git 來源..."
               cd "${CLONE_DIR}"
-              echo "運行 autogen.sh 生成 configure 文件..."
               ./autogen.sh || { echo "::error::autogen.sh 失敗。"; exit 1; }
           else
-              echo "處理 Tarball 來源..."
               tar -xf "${DOWNLOADED_FILE}"
               BUILD_DIR="libmnl-${VERSION_TO_BUILD}"
               cd "${BUILD_DIR}"
           fi
           
-          # 🚨 最終修正：直接修改 configure 腳本，將 C 編譯器工作檢查強行設定為成功
-          echo "執行 sed 修正 configure 腳本，強制跳過 C 編譯器運行測試..."
+          # 強制跳過 C 編譯器運行測試
           sed -i 's/ac_cv_prog_cc_works=no/ac_cv_prog_cc_works=yes/g' configure
           sed -i 's/ac_cv_c_compiler_runs=no/ac_cv_c_compiler_runs=yes/g' configure
 
-          # --- config.cache 強制交叉編譯結果 (已修正 EOF 縮排) ---
+          # --- config.cache 強制交叉編譯結果 ---
           cat > config.cache <<EOF
 ac_cv_prog_cc_works=yes
 ac_cv_prog_cc_c_o=yes
@@ -201,33 +160,21 @@ ac_cv_sizeof_long=4
 ac_cv_sizeof_void_p=4
 EOF
 
-          echo "執行 configure..."
           ./configure --host=$HOST_TRIPLE \
                       --build=$BUILD_TRIPLE \
                       --prefix=/usr \
                       --disable-shared \
                       --enable-static \
                       --disable-examples \
-                      --cache-file=config.cache \
-                      ac_cv_prog_cc_works=yes \
-                      ac_cv_prog_cc_c_o=yes \
-                      ac_cv_prog_cc_fast_install=yes \
-                      ac_cv_prog_ld_target=yes \
-                      ac_cv_prog_cc_cross_compile=yes \
-                      ac_cv_c_compiler_runs=yes \
-                      ac_cv_sizeof_int=4 \
-                      ac_cv_sizeof_long=4 \
-                      ac_cv_sizeof_void_p=4 || { echo "::error::libmnl configure 失敗。"; exit 1; }
+                      --cache-file=config.cache || { echo "::error::libmnl configure 失敗。"; exit 1; }
 
           make || { echo "::error::libmnl make 失敗。"; exit 1; }
           make install DESTDIR="${{ env.STAGING_DIR }}" || { echo "::error::libmnl install 失敗。"; exit 1; }
-
-          echo "libmnl v${VERSION_TO_BUILD} 靜態編譯完成並安裝到 ${{ env.STAGING_DIR }}/usr/lib"
           cd ..
         shell: bash
       
       # -----------------------------------------------------------
-      # 步驟 2: 靜態編譯 TC (使用 CC 絕對路徑及 libmnl 連結旗標)
+      # 步驟 2: 靜態編譯 TC (L193 附近的步驟)
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
@@ -236,36 +183,22 @@ EOF
           VERSION_TO_USE=""
           ARCHIVE_SUFFIX=""
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
-          # 構造 AR 路徑 (e.g., mipsel-openwrt-linux-musl-ar)
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
-          # 函數：嘗試下載並設定版本
           try_download() {
               local version=$1
-              if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then
-                  VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.xz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX}) - 優先使用。"; return 0
-              fi
-              if wget -nv "${BASE_URL}iproute2-${version}.tar.gz"; then
-                  VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.gz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX})。" ; return 0
-              fi
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.xz"; return 0; fi
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.gz"; then VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.gz"; return 0; fi
               return 1
           }
 
-          # 執行下載
-          echo "嘗試下載最新版本 iproute2-${LATEST_VERSION}..."
           if ! try_download "${LATEST_VERSION}"; then
-              echo "::warning::警告：最新版本 ${LATEST_VERSION} 無法下載。嘗試回退到 ${FALLBACK_VERSION} 版本。"
-              if ! try_download "${FALLBACK_VERSION}"; then
-                  echo "::error::錯誤：iproute2 下載失敗。" ; exit 1
-              fi
+              if ! try_download "${FALLBACK_VERSION}"; then echo "::error::錯誤：iproute2 下載失敗。" ; exit 1; fi
           fi
 
-          # 解壓
           tar -xf iproute2-${VERSION_TO_USE}${ARCHIVE_SUFFIX}
           cd iproute2-${VERSION_TO_USE}
 
-          # 靜態交叉編譯 tc：
-          # 使用 LDFLAGS="-static -L... -lmnl" 來強制靜態連結 libmnl
           make CC="${{ env.CC_FULL_PATH }}" \
                LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
                CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
@@ -273,23 +206,16 @@ EOF
                SUBDIRS=tc || { echo "::error::tc make 失敗。"; exit 1; }
           
           mkdir -p ${{ env.TC_STATIC_PATH }}
-          # 檢查 tc 執行檔是否成功生成
-          if [ ! -f "tc/tc" ]; then
-            echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。"
-            exit 1
-          fi
+          if [ ! -f "tc/tc" ]; then echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。 (L193 附近檢查點)"; exit 1; fi
           
           cp tc/tc ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
-          
-          echo "--- 靜態連結驗證結果 ---"
-          file ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           
           echo "IPROUTE2_VERSION=${VERSION_TO_USE}" >> $GITHUB_ENV
 
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 3: 上傳靜態 TC Binary 作為 Artifact
+      # 步驟 3: 上傳靜態 TC Binary 作為 Artifact (L193 錯誤指向這裡)
       # -----------------------------------------------------------
       - name: Upload Static TC Binary as Artifact
         uses: actions/upload-artifact@v4
