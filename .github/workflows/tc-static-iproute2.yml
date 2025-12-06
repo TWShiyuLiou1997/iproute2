@@ -38,7 +38,7 @@ jobs:
         run: |
           sudo apt update
           # 增加 autoconf/automake
-          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils autoconf automake
+          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils autoconf automake curl
           
           # 安裝 32-bit 運行時及開發依賴庫
           sudo dpkg --add-architecture i386
@@ -104,13 +104,12 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制環境變數)
+      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制環境變數 + 下載穩定性)
       # -----------------------------------------------------------
       - name: ⚙️ Pre-compile and Install libmnl (最終修正)
         run: |
           # --- 變數定義與準備 ---
           VERSION_TARGET="1.2.7"  
-          VERSION_FALLBACK_KNOWN="1.0.5"
           URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
           LIBMNL_REPO="https://git.netfilter.org/libmnl.git"
           CLONE_DIR="libmnl-source"
@@ -118,31 +117,30 @@ jobs:
           HOST_TRIPLE=$(basename "${{ env.CC_FULL_PATH }}" | sed 's/gcc$//' | sed 's/[-]$//')
           BUILD_TRIPLE=$(/usr/share/misc/config.guess)
 
-          DOWNLOADED_FILE=""
-          VERSION_TO_BUILD=""
           BUILD_DIR=""
 
           # 匯出交叉編譯器與 Flags
           export CC="${{ env.CC_FULL_PATH }}"
-          # 增加 CC_FOR_BUILD 確保 Autoconf 不會使用宿主機的 cc
           export CC_FOR_BUILD="/usr/bin/gcc" 
           export CFLAGS="-Os -pipe -I${{ env.STAGING_DIR }}/usr/include"
           export LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib"
 
-          # --- 下載與備援邏輯 ---
-          if wget -nv "${URL_TARGET}" -O "libmnl-target.tar.xz" 2>/dev/null; then
-              DOWNLOADED_FILE="libmnl-target.tar.xz"
-              VERSION_TO_BUILD="${VERSION_TARGET}"
-              tar -xf "${DOWNLOADED_FILE}"
-              BUILD_DIR="libmnl-${VERSION_TO_BUILD}"
-          elif git clone --depth 1 "${LIBMNL_REPO}" "${CLONE_DIR}" 2>/dev/null; then
+          echo "嘗試下載 libmnl-v${VERSION_TARGET}..."
+          # --- 下載嘗試 ---
+          if curl -L --fail "${URL_TARGET}" -o "libmnl-target.tar.xz"; then
+              echo "成功下載 libmnl-v${VERSION_TARGET}。"
+              tar -xf "libmnl-target.tar.xz"
+              BUILD_DIR="libmnl-${VERSION_TARGET}"
+          elif git clone --depth 1 "${LIBMNL_REPO}" "${CLONE_DIR}"; then
+              echo "下載失敗，使用 Git 倉庫備援。"
               BUILD_DIR="${CLONE_DIR}"
               cd "${BUILD_DIR}"
               # 如果是 Git 源碼，需要先執行 autogen.sh
               ./autogen.sh || { echo "::error::autogen.sh 失敗。"; exit 1; }
               cd ..
           else
-              echo "::error::錯誤：libmnl 下載嘗試均失敗。"; exit 1
+              echo "::error::錯誤：libmnl 下載嘗試均失敗。請檢查 ${URL_TARGET} 是否可訪問，以及 Git 倉庫是否有效。" 
+              exit 1
           fi
 
           if [ -z "$BUILD_DIR" ]; then echo "::error::錯誤：無法確定 libmnl 構建目錄。"; exit 1; fi
