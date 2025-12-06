@@ -55,6 +55,7 @@ jobs:
           TOOLCHAIN_VERSION="23.05.2"  
           TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
           
+          # SDK 下載及解壓重試邏輯
           MAX_RETRIES=2
           RETRY_COUNT=0
           SDK_DOWNLOAD_URL="https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}"
@@ -79,14 +80,17 @@ jobs:
               fi
           done
 
+          # 尋找 Toolchain 目錄 (包含 bin 和 lib)
           TOOLCHAIN_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "toolchain-*" | head -n 1)
           if [ -z "$TOOLCHAIN_DIR" ]; then echo "::error::錯誤：找不到 Toolchain 目錄。"; exit 1; fi
 
+          # 尋找編譯器絕對路徑：在正確的 bin 目錄下尋找 gcc
           TOOLCHAIN_COMPILER_PATH=$(find ${TOOLCHAIN_DIR}/bin -type f -name "*gcc" | head -n 1)
           if [ -z "$TOOLCHAIN_COMPILER_PATH" ]; then echo "::error::錯誤：找不到編譯器。"; exit 1; fi
 
           TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
           
+          # 尋找 STAGING_DIR
           STAGING_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "target-*" | head -n 1)
           if [ -z "$STAGING_DIR" ]; then echo "::error::錯誤：找不到 Target Staging Directory (在 sdk/staging_dir 內)。"; exit 1; fi
           
@@ -100,11 +104,12 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl
+      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正版，使用 ECHO 避免 EOF 錯誤)
       # -----------------------------------------------------------
-      - name: ⚙️ Pre-compile and Install libmnl (修正版)
+      - name: ⚙️ Pre-compile and Install libmnl (最終修正)
         run: |
-          VERSION_TARGET="1.2.7"
+          # --- 變數定義與準備 ---
+          VERSION_TARGET="1.2.7"  
           VERSION_FALLBACK_KNOWN="1.0.5"
           URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
           URL_FALLBACK="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_FALLBACK_KNOWN}.tar.bz2"
@@ -117,12 +122,13 @@ jobs:
           DOWNLOADED_FILE=""
           VERSION_TO_BUILD=""
 
+          # 匯出交叉編譯器與 Flags
           export CC="${{ env.CC_FULL_PATH }}"
-          export SYSROOT="${{ env.STAGING_DIR }}"
-          export CFLAGS="--sysroot=$SYSROOT -Os -pipe -I$SYSROOT/usr/include"
-          export LDFLAGS="--sysroot=$SYSROOT -static -L$SYSROOT/usr/lib"
+          # CFLAGS 和 LDFLAGS 不再包含 --sysroot 避免與 configure 衝突
+          export CFLAGS="-Os -pipe -I${{ env.STAGING_DIR }}/usr/include"
+          export LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib"
 
-          # --- 下載與備援邏輯 ---
+          # --- 下載與備援邏輯 (保持不變) ---
           if wget -nv "${URL_TARGET}" -O "libmnl-target.tar.xz" 2>/dev/null; then
               DOWNLOADED_FILE="libmnl-target.tar.xz"
               VERSION_TO_BUILD="${VERSION_TARGET}"
@@ -145,36 +151,33 @@ jobs:
               cd "${BUILD_DIR}"
           fi
           
-          # 強制跳過 C 編譯器運行測試
-          sed -i 's/ac_cv_prog_cc_works=no/ac_cv_prog_cc_works=yes/g' configure
-          sed -i 's/ac_cv_c_compiler_runs=no/ac_cv_c_compiler_runs=yes/g' configure
+          # --- 使用 ECHO 創建 config.cache，避免 <<EOF 縮排問題 ---
+          echo "ac_cv_prog_cc_works=yes" > config.cache
+          echo "ac_cv_prog_cc_c_o=yes" >> config.cache
+          echo "ac_cv_prog_cc_fast_install=yes" >> config.cache
+          echo "ac_cv_prog_ld_target=yes" >> config.cache
+          echo "ac_cv_prog_cc_cross_compile=yes" >> config.cache
+          echo "ac_cv_c_compiler_runs=yes" >> config.cache
+          echo "ac_cv_sizeof_int=4" >> config.cache
+          echo "ac_cv_sizeof_long=4" >> config.cache
+          echo "ac_cv_sizeof_void_p=4" >> config.cache
 
-          # --- config.cache 強制交叉編譯結果 ---
-          cat > config.cache <<EOF
-ac_cv_prog_cc_works=yes
-ac_cv_prog_cc_c_o=yes
-ac_cv_prog_cc_fast_install=yes
-ac_cv_prog_ld_target=yes
-ac_cv_prog_cc_cross_compile=yes
-ac_cv_c_compiler_runs=yes
-ac_cv_sizeof_int=4
-ac_cv_sizeof_long=4
-ac_cv_sizeof_void_p=4
-EOF
-
+          # 執行 configure，使用 --cache-file 和 --with-sysroot
           ./configure --host=$HOST_TRIPLE \
                       --build=$BUILD_TRIPLE \
                       --prefix=/usr \
                       --disable-shared \
                       --enable-static \
-                      --disable-examples \
-                      --cache-file=config.cache || { echo "::error::libmnl configure 失敗。"; exit 1; }
-
+                      --cache-file=config.cache \
+                      --with-sysroot="${{ env.STAGING_DIR }}" || { echo "::error::libmnl configure 失敗。"; exit 1; }
+          
           make || { echo "::error::libmnl make 失敗。"; exit 1; }
+          # 使用 DESTDIR 安裝到 staging 目錄
           make install DESTDIR="${{ env.STAGING_DIR }}" || { echo "::error::libmnl install 失敗。"; exit 1; }
+          
           cd ..
         shell: bash
-      
+
       # -----------------------------------------------------------
       # 步驟 2: 靜態編譯 TC (L154 附近修正點)
       # -----------------------------------------------------------
@@ -187,29 +190,32 @@ EOF
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
-          # 將函數定義拆分，使其在 YAML 中更易讀且符合 Shell 語法
+          # 函數：嘗試下載並設定版本 (L154 在這個區塊內，已修正為標準 Shell 語法)
           try_download() {
               local version=$1
-              if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then 
-                  VERSION_TO_USE="${version}"; 
-                  ARCHIVE_SUFFIX=".tar.xz"; 
-                  return 0; 
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then
+                  VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.xz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX}) - 優先使用。"; return 0
               fi
-              if wget -nv "${BASE_URL}iproute2-${version}.tar.gz"; then 
-                  VERSION_TO_USE="${version}"; 
-                  ARCHIVE_SUFFIX=".tar.gz"; 
-                  return 0; 
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.gz"; then
+                  VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.gz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX})。" ; return 0
               fi
               return 1
           }
 
+          # 執行下載
+          echo "嘗試下載最新版本 iproute2-${LATEST_VERSION}..."
           if ! try_download "${LATEST_VERSION}"; then
-              if ! try_download "${FALLBACK_VERSION}"; then echo "::error::錯誤：iproute2 下載失敗。" ; exit 1; fi
+              echo "::warning::警告：最新版本 ${LATEST_VERSION} 無法下載。嘗試回退到 ${FALLBACK_VERSION} 版本。"
+              if ! try_download "${FALLBACK_VERSION}"; then
+                  echo "::error::錯誤：iproute2 下載失敗。" ; exit 1
+              fi
           fi
 
+          # 解壓
           tar -xf iproute2-${VERSION_TO_USE}${ARCHIVE_SUFFIX}
           cd iproute2-${VERSION_TO_USE}
 
+          # 靜態交叉編譯 tc：
           make CC="${{ env.CC_FULL_PATH }}" \
                LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
                CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
@@ -217,7 +223,11 @@ EOF
                SUBDIRS=tc || { echo "::error::tc make 失敗。"; exit 1; }
           
           mkdir -p ${{ env.TC_STATIC_PATH }}
-          if [ ! -f "tc/tc" ]; then echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。"; exit 1; fi
+          # 檢查 tc 執行檔是否成功生成
+          if [ ! -f "tc/tc" ]; then
+            echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。"
+            exit 1
+          fi
           
           cp tc/tc ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           
