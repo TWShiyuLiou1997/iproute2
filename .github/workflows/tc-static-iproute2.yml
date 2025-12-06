@@ -149,7 +149,7 @@ jobs:
           sed -i 's/ac_cv_prog_cc_works=no/ac_cv_prog_cc_works=yes/g' configure
           sed -i 's/ac_cv_c_compiler_runs=no/ac_cv_c_compiler_runs=yes/g' configure
 
-          # --- config.cache 強制交叉編譯結果 (已修正 EOF 縮排) ---
+          # --- config.cache 強制交叉編譯結果 ---
           cat > config.cache <<EOF
 ac_cv_prog_cc_works=yes
 ac_cv_prog_cc_c_o=yes
@@ -176,7 +176,7 @@ EOF
         shell: bash
       
       # -----------------------------------------------------------
-      # 步驟 2: 靜態編譯 TC
+      # 步驟 2: 靜態編譯 TC (L154 附近修正點)
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
@@ -187,10 +187,19 @@ EOF
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
+          # 將函數定義拆分，使其在 YAML 中更易讀且符合 Shell 語法
           try_download() {
               local version=$1
-              if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.xz"; return 0; fi
-              if wget -nv "${BASE_URL}iproute2-${version}.tar.gz"; then VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.gz"; return 0; fi
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then 
+                  VERSION_TO_USE="${version}"; 
+                  ARCHIVE_SUFFIX=".tar.xz"; 
+                  return 0; 
+              fi
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.gz"; then 
+                  VERSION_TO_USE="${version}"; 
+                  ARCHIVE_SUFFIX=".tar.gz"; 
+                  return 0; 
+              fi
               return 1
           }
 
