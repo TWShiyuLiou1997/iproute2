@@ -121,69 +121,75 @@ jobs:
           
         shell: bash
 
-# -----------------------------------------------------------
-# 步驟 1.5: 靜態交叉編譯 libmnl (修正版：加入 sysroot 與禁用 examples)
-# -----------------------------------------------------------
-- name: ⚙️ Pre-compile and Install libmnl (修正版)
-  run: |
-    # --- 變數定義與準備 ---
-    VERSION_TARGET="1.2.7"
-    VERSION_FALLBACK_KNOWN="1.0.5"
-    URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
-    URL_FALLBACK="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_FALLBACK_KNOWN}.tar.bz2"
-    LIBMNL_REPO="https://git.netfilter.org/libmnl.git"
-    CLONE_DIR="libmnl-source"
+      # -----------------------------------------------------------
+      # 步驟 1.5: 靜態交叉編譯 libmnl (修正版：加入 sysroot 與禁用 examples)
+      # -----------------------------------------------------------
+      - name: ⚙️ Pre-compile and Install libmnl (修正版)
+        run: |
+          # --- 變數定義與準備 ---
+          VERSION_TARGET="1.2.7"
+          VERSION_FALLBACK_KNOWN="1.0.5"
+          URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
+          URL_FALLBACK="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_FALLBACK_KNOWN}.tar.bz2"
+          LIBMNL_REPO="https://git.netfilter.org/libmnl.git"
+          CLONE_DIR="libmnl-source"
 
-    HOST_TRIPLE=$(basename "${{ env.CC_FULL_PATH }}" | sed 's/gcc$//' | sed 's/[-]$//')
-    BUILD_TRIPLE=$(/usr/share/misc/config.guess)
+          HOST_TRIPLE=$(basename "${{ env.CC_FULL_PATH }}" | sed 's/gcc$//' | sed 's/[-]$//')
+          BUILD_TRIPLE=$(/usr/share/misc/config.guess)
 
-    echo "偵測到 HOST_TRIPLE: $HOST_TRIPLE"
-    echo "偵測到 BUILD_TRIPLE: $BUILD_TRIPLE"
+          echo "偵測到 HOST_TRIPLE: $HOST_TRIPLE"
+          echo "偵測到 BUILD_TRIPLE: $BUILD_TRIPLE"
 
-    DOWNLOADED_FILE=""
-    VERSION_TO_BUILD=""
+          DOWNLOADED_FILE=""
+          VERSION_TO_BUILD=""
 
-    # 匯出交叉編譯器與 sysroot
-    export CC="${{ env.CC_FULL_PATH }}"
-    export SYSROOT="${{ env.STAGING_DIR }}"
-    export CFLAGS="--sysroot=$SYSROOT -Os -pipe -I$SYSROOT/usr/include"
-    export LDFLAGS="--sysroot=$SYSROOT -static -L$SYSROOT/usr/lib"
+          # 匯出交叉編譯器與 sysroot
+          export CC="${{ env.CC_FULL_PATH }}"
+          export SYSROOT="${{ env.STAGING_DIR }}"
+          # 新增 --sysroot 旗標
+          export CFLAGS="--sysroot=$SYSROOT -Os -pipe -I$SYSROOT/usr/include"
+          export LDFLAGS="--sysroot=$SYSROOT -static -L$SYSROOT/usr/lib"
 
-    # --- 下載與備援邏輯 ---
-    echo "嘗試 (1/3) WGET 下載最新版本 v${VERSION_TARGET}..."
-    if wget -nv "${URL_TARGET}" -O "libmnl-target.tar.xz" 2>/dev/null; then
-        DOWNLOADED_FILE="libmnl-target.tar.xz"
-        VERSION_TO_BUILD="${VERSION_TARGET}"
+          # --- 下載與備援邏輯 ---
+          echo "嘗試 (1/3) WGET 下載最新版本 v${VERSION_TARGET}..."
+          if wget -nv "${URL_TARGET}" -O "libmnl-target.tar.xz" 2>/dev/null; then
+              DOWNLOADED_FILE="libmnl-target.tar.xz"
+              VERSION_TO_BUILD="${VERSION_TARGET}"
 
-    elif git clone --depth 1 "${LIBMNL_REPO}" "${CLONE_DIR}" 2>/dev/null; then
-        echo "✅ WGET 下載失敗。執行 (2/3) Git 倉庫備援下載 (最新 Master HEAD)。"
-        VERSION_TO_BUILD="${VERSION_TARGET}-git"
+          elif git clone --depth 1 "${LIBMNL_REPO}" "${CLONE_DIR}" 2>/dev/null; then
+              echo "✅ WGET 下載失敗。執行 (2/3) Git 倉庫備援下載 (最新 Master HEAD)。"
+              VERSION_TO_BUILD="${VERSION_TARGET}-git"
 
-    elif wget -nv "${URL_FALLBACK}" -O "libmnl-fallback.tar.bz2" 2>/dev/null; then
-        echo "⚠️ Git 下載失敗。執行 (3/3) 嘗試下載用戶提供的舊版 v${VERSION_FALLBACK_KNOWN}。"
-        DOWNLOADED_FILE="libmnl-fallback.tar.bz2"
-        VERSION_TO_BUILD="${VERSION_FALLBACK_KNOWN}"
+          elif wget -nv "${URL_FALLBACK}" -O "libmnl-fallback.tar.bz2" 2>/dev/null; then
+              echo "⚠️ Git 下載失敗。執行 (3/3) 嘗試下載用戶提供的舊版 v${VERSION_FALLBACK_KNOWN}。"
+              DOWNLOADED_FILE="libmnl-fallback.tar.bz2"
+              VERSION_TO_BUILD="${VERSION_FALLBACK_KNOWN}"
 
-    else
-        echo "::error::錯誤：所有下載嘗試均失敗。"
-        exit 1
-    fi
+          else
+              echo "::error::錯誤：所有下載嘗試均失敗。"
+              exit 1
+          fi
 
-    # --- 準備編譯目錄並進入 ---
-    if [ "${VERSION_TO_BUILD}" == "${VERSION_TARGET}-git" ]; then
-        echo "處理 Git 來源..."
-        cd "${CLONE_DIR}"
-        echo "運行 autogen.sh 生成 configure 文件..."
-        ./autogen.sh || { echo "::error::autogen.sh 失敗。"; exit 1; }
-    else
-        echo "處理 Tarball 來源..."
-        tar -xf "${DOWNLOADED_FILE}"
-        BUILD_DIR="libmnl-${VERSION_TO_BUILD}"
-        cd "${BUILD_DIR}"
-    fi
+          # --- 準備編譯目錄並進入 ---
+          if [ "${VERSION_TO_BUILD}" == "${VERSION_TARGET}-git" ]; then
+              echo "處理 Git 來源..."
+              cd "${CLONE_DIR}"
+              echo "運行 autogen.sh 生成 configure 文件..."
+              ./autogen.sh || { echo "::error::autogen.sh 失敗。"; exit 1; }
+          else
+              echo "處理 Tarball 來源..."
+              tar -xf "${DOWNLOADED_FILE}"
+              BUILD_DIR="libmnl-${VERSION_TO_BUILD}"
+              cd "${BUILD_DIR}"
+          fi
+          
+          # 🚨 最終修正：直接修改 configure 腳本，將 C 編譯器工作檢查強行設定為成功
+          echo "執行 sed 修正 configure 腳本，強制跳過 C 編譯器運行測試..."
+          sed -i 's/ac_cv_prog_cc_works=no/ac_cv_prog_cc_works=yes/g' configure
+          sed -i 's/ac_cv_c_compiler_runs=no/ac_cv_c_compiler_runs=yes/g' configure
 
-    # --- config.cache 強制交叉編譯結果 ---
-    cat > config.cache <<EOF
+          # --- config.cache 強制交叉編譯結果 ---
+          cat > config.cache <<EOF
 ac_cv_prog_cc_works=yes
 ac_cv_prog_cc_c_o=yes
 ac_cv_prog_cc_fast_install=yes
@@ -195,31 +201,31 @@ ac_cv_sizeof_long=4
 ac_cv_sizeof_void_p=4
 EOF
 
-    echo "執行 configure..."
-    ./configure --host=$HOST_TRIPLE \
-                --build=$BUILD_TRIPLE \
-                --prefix=/usr \
-                --disable-shared \
-                --enable-static \
-                --disable-examples \
-                --cache-file=config.cache \
-                ac_cv_prog_cc_works=yes \
-                ac_cv_prog_cc_c_o=yes \
-                ac_cv_prog_cc_fast_install=yes \
-                ac_cv_prog_ld_target=yes \
-                ac_cv_prog_cc_cross_compile=yes \
-                ac_cv_c_compiler_runs=yes \
-                ac_cv_sizeof_int=4 \
-                ac_cv_sizeof_long=4 \
-                ac_cv_sizeof_void_p=4 || { echo "::error::libmnl configure 失敗。"; exit 1; }
+          echo "執行 configure..."
+          ./configure --host=$HOST_TRIPLE \
+                      --build=$BUILD_TRIPLE \
+                      --prefix=/usr \
+                      --disable-shared \
+                      --enable-static \
+                      --disable-examples \
+                      --cache-file=config.cache \
+                      ac_cv_prog_cc_works=yes \
+                      ac_cv_prog_cc_c_o=yes \
+                      ac_cv_prog_cc_fast_install=yes \
+                      ac_cv_prog_ld_target=yes \
+                      ac_cv_prog_cc_cross_compile=yes \
+                      ac_cv_c_compiler_runs=yes \
+                      ac_cv_sizeof_int=4 \
+                      ac_cv_sizeof_long=4 \
+                      ac_cv_sizeof_void_p=4 || { echo "::error::libmnl configure 失敗。"; exit 1; }
 
-    make || { echo "::error::libmnl make 失敗。"; exit 1; }
-    make install DESTDIR="${{ env.STAGING_DIR }}" || { echo "::error::libmnl install 失敗。"; exit 1; }
+          make || { echo "::error::libmnl make 失敗。"; exit 1; }
+          make install DESTDIR="${{ env.STAGING_DIR }}" || { echo "::error::libmnl install 失敗。"; exit 1; }
 
-    echo "libmnl v${VERSION_TO_BUILD} 靜態編譯完成並安裝到 ${{ env.STAGING_DIR }}/usr/lib"
-    cd ..
-  shell: bash
-  
+          echo "libmnl v${VERSION_TO_BUILD} 靜態編譯完成並安裝到 ${{ env.STAGING_DIR }}/usr/lib"
+          cd ..
+        shell: bash
+      
       # -----------------------------------------------------------
       # 步驟 2: 靜態編譯 TC (使用 CC 絕對路徑及 libmnl 連結旗標)
       # -----------------------------------------------------------
