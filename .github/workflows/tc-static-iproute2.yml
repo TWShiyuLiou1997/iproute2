@@ -46,8 +46,6 @@ jobs:
           sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
         shell: bash
         
-      ---
-      
       # -----------------------------------------------------------
       # 步驟 1: 下載並設定 MIPS 交叉編譯器
       # -----------------------------------------------------------
@@ -84,7 +82,7 @@ jobs:
 
           # 尋找 Toolchain 目錄
           TOOLCHAIN_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "toolchain-*" | head -n 1)
-          if [ -z "$TOOLCHAIN_DIR" ]; then echo "::error::錯誤：找不到 Toolchain 目錄。"; exit 1; fi
+          if [ -z "$TOOLCHAIN_DIR" ]; then echo "::error::錯誤：找不到 Toolchain 目錄。"; exit 1; 對 fi
 
           # 尋找編譯器絕對路徑
           TOOLCHAIN_COMPILER_PATH=$(find ${TOOLCHAIN_DIR}/bin -type f -name "*gcc" | head -n 1)
@@ -104,8 +102,6 @@ jobs:
           echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
           
         shell: bash
-
-      ---
 
       # -----------------------------------------------------------
       # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制 GCC Sysroot)
@@ -173,8 +169,6 @@ jobs:
           cd ..
         shell: bash
         
-      ---
-
       # -----------------------------------------------------------
       # 步驟 2: 靜態編譯 TC (iproute2)
       # -----------------------------------------------------------
@@ -233,8 +227,6 @@ jobs:
 
         shell: bash
 
-      ---
-
       # -----------------------------------------------------------
       # 步驟 3: 上傳靜態 TC Binary 作為 Artifact
       # -----------------------------------------------------------
@@ -245,8 +237,6 @@ jobs:
           path: ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           retention-days: 90
           
-      ---
-
       # -----------------------------------------------------------
       # 後續韌體編譯流程
       # -----------------------------------------------------------
