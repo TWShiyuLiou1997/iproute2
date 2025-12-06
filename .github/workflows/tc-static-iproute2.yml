@@ -188,7 +188,7 @@ jobs:
           sed -i 's/ac_cv_prog_cc_works=no/ac_cv_prog_cc_works=yes/g' configure
           sed -i 's/ac_cv_c_compiler_runs=no/ac_cv_c_compiler_runs=yes/g' configure
 
-          # --- config.cache 強制交叉編譯結果 ---
+          # --- config.cache 強制交叉編譯結果 (已修正 EOF 縮排) ---
           cat > config.cache <<EOF
 ac_cv_prog_cc_works=yes
 ac_cv_prog_cc_c_o=yes
