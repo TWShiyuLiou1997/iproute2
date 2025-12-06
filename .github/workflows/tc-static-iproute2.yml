@@ -37,8 +37,10 @@ jobs:
       - name: Prepare environment (Install dependencies & Fix C Compiler)
         run: |
           sudo apt update
+          # 增加 autoconf/automake
           sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils autoconf automake
           
+          # 安裝 32-bit 運行時及開發依賴庫
           sudo dpkg --add-architecture i386
           sudo apt update
           sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
@@ -147,7 +149,7 @@ jobs:
           sed -i 's/ac_cv_prog_cc_works=no/ac_cv_prog_cc_works=yes/g' configure
           sed -i 's/ac_cv_c_compiler_runs=no/ac_cv_c_compiler_runs=yes/g' configure
 
-          # --- config.cache 強制交叉編譯結果 ---
+          # --- config.cache 強制交叉編譯結果 (已修正 EOF 縮排) ---
           cat > config.cache <<EOF
 ac_cv_prog_cc_works=yes
 ac_cv_prog_cc_c_o=yes
@@ -174,7 +176,7 @@ EOF
         shell: bash
       
       # -----------------------------------------------------------
-      # 步驟 2: 靜態編譯 TC (L193 附近的步驟)
+      # 步驟 2: 靜態編譯 TC
       # -----------------------------------------------------------
       - name: Download and Statically Compile TC
         run: |
@@ -206,7 +208,7 @@ EOF
                SUBDIRS=tc || { echo "::error::tc make 失敗。"; exit 1; }
           
           mkdir -p ${{ env.TC_STATIC_PATH }}
-          if [ ! -f "tc/tc" ]; then echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。 (L193 附近檢查點)"; exit 1; fi
+          if [ ! -f "tc/tc" ]; then echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。"; exit 1; fi
           
           cp tc/tc ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
           
@@ -215,7 +217,7 @@ EOF
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 3: 上傳靜態 TC Binary 作為 Artifact (L193 錯誤指向這裡)
+      # 步驟 3: 上傳靜態 TC Binary 作為 Artifact
       # -----------------------------------------------------------
       - name: Upload Static TC Binary as Artifact
         uses: actions/upload-artifact@v4
