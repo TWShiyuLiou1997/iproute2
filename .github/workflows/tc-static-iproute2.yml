@@ -46,8 +46,6 @@ jobs:
           sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
         shell: bash
         
-      ---
-      
       # -----------------------------------------------------------
       # 步驟 1: 下載並設定 MIPS 交叉編譯器
       # -----------------------------------------------------------
@@ -105,16 +103,13 @@ jobs:
           
         shell: bash
 
-      ---
-      
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制 GCC Sysroot)
+      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制 GCC Sysroot 和最大化 Autoconf 覆蓋)
       # -----------------------------------------------------------
       - name: ⚙️ Pre-compile and Install libmnl (最終修正)
         run: |
           # --- 變數定義與準備 ---
           VERSION_TARGET="1.2.7"  
-          # 原始下載 URL 返回 404 (curl: (22) The requested URL returned error: 404)，但腳本已備援使用 Git
           URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
           LIBMNL_REPO="https://git.netfilter.org/libmnl.git"
           CLONE_DIR="libmnl-source"
@@ -153,8 +148,8 @@ jobs:
           # 進入構建目錄
           cd "${BUILD_DIR}"
 
-          # 🚨 關鍵修正：確保 Autoconf 認為編譯器和程式都可以成功運行
-          AUTOCONF_OVERRIDES="ac_cv_prog_cc_works=yes ac_cv_prog_cc_c_o=yes ac_cv_prog_cc_fast_install=yes ac_cv_prog_ld_target=yes ac_cv_prog_cc_cross_compile=yes ac_cv_c_compiler_runs=yes ac_cv_sizeof_int=4 ac_cv_sizeof_long=4 ac_cv_sizeof_void_p=4 ac_cv_search_mnl_socket_open=yes"
+          # 🚨 最大化覆蓋：確保 Autoconf 認為編譯器和程式都可以成功運行
+          AUTOCONF_OVERRIDES="ac_cv_prog_cc_works=yes ac_cv_c_compiler_runs=yes ac_cv_prog_cc_c_o=yes ac_cv_prog_cc_fast_install=yes ac_cv_prog_ld_target=yes ac_cv_c_compiler_gnu=yes ac_cv_prog_cc_cross=yes ac_cv_prog_cc_cross_compile=yes ac_cv_search_mnl_socket_open=yes ac_cv_sizeof_int=4 ac_cv_sizeof_long=4 ac_cv_sizeof_void_p=4"
 
           echo "執行 configure (使用強制環境變數繞過測試)..."
           
@@ -174,8 +169,6 @@ jobs:
           cd ..
         shell: bash
 
-      ---
-
       # -----------------------------------------------------------
       # 步驟 2: 靜態編譯 TC (iproute2)
       # -----------------------------------------------------------
@@ -186,6 +179,7 @@ jobs:
           VERSION_TO_USE=""
           ARCHIVE_SUFFIX=""
           BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
+          # AR 工具路徑 (用於靜態編譯)
           AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
 
           # 函數：嘗試下載 iproute2
@@ -213,8 +207,7 @@ jobs:
           tar -xf iproute2-${VERSION_TO_USE}${ARCHIVE_SUFFIX}
           cd iproute2-${VERSION_TO_USE}
 
-          # 靜態交叉編譯 tc：
-          # 這裡的 LDFLAGS 包含了 -static 和 -lmnl
+          # 靜態交叉編譯 tc：直接覆蓋 Makefile 變數
           make CC="${{ env.CC_FULL_PATH }} --sysroot=${{ env.STAGING_DIR }}" \
                LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
                CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
@@ -234,7 +227,293 @@ jobs:
 
         shell: bash
 
-      ---
+      # -----------------------------------------------------------
+      # 步驟 3: 上傳靜態 TC Binary 作為 Artifact
+      # -----------------------------------------------------------
+      - name: Upload Static TC Binary as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tc_static_mipsel_${{ env.IPROUTE2_VERSION }}  
+          path: ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
+          retention-days: 90
+          
+      # -----------------------------------------------------------
+      # 後續韌體編譯流程
+      # -----------------------------------------------------------
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug_enabled == 'yes' }}
+        with:
+          limit-access-to-actor: true
+          
+      - name: Start build
+        run: |
+          # 假設您的韌體構建腳本 `build_firmware_ci` 會使用編譯好的 tc_static_mipsel
+          cd trunk
+          mkdir -p ${images_dir}
+          for m in $targets; do  
+            fakeroot ./build_firmware_ci $m
+            if [ $? -eq 0 ]; then  
+              cp -f images/*.trx ${images_dir}/$m.trx
+            else  
+              echo "::error::韌體編譯失敗: $m"
+              exit 1
+            fi
+            ./clear_tree_simple >/dev/null 2>&1
+          done
+          
+      - name: Create archive
+        if: ${{ github.event_name != 'release' && success() }}
+        run: |
+          ls -lh ${images_dir}
+          GIT_VERSION=`git rev-parse --short=7 HEAD 2>/dev/null` && [ -n "$GIT_VERSION" ] && \
+          image_name=images_${build_variant}_${GIT_VERSION} || image_name=images_${build_variant}
+          cd ${images_dir}; md5sum *.trx |tee md5sum.txt; 7z a -mx=9 ${image_name}.7z ./*
+          echo "image_name=${image_name}" >> $GITHUB_ENV
+          
+      - name: Upload images to Artifact
+        if: ${{ github.event_name != 'release' && success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.image_name }}
+          path: ${{ env.images_dir }}/*.7z
+          
+      - name: Upload images to Releases
+        if: ${{ github.event_name != 'release' && success() }}
+        uses: svenstaro/upload-release-action@2.2.0
+        with:
+          repo_token: ${{ secrets.secrets.GITHUB_TOKEN }}
+          file: ${{ env.images_dir }}/*.trx
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: truename: CI with Static TC Build
+
+# 定義觸發條件
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run the build with tmate debugging enabled'
+        required: false
+        default: 'no'
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
+    env:
+      build_variant: ${{ matrix.build_variant }}
+      targets: ${{ matrix.targets }}
+      images_dir: /opt/images
+    strategy:
+      matrix:
+        include:
+          - build_variant: "mt7621"
+            targets: "K2P"
+            
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Prepare environment (Install dependencies & Fix C Compiler)
+        run: |
+          sudo apt update
+          # 增加 autoconf/automake 和 curl
+          sudo apt install -y libtool-bin gperf python3-docutils autopoint gettext bison flex wget xz-utils autoconf automake curl
+          
+          # 安裝 32-bit 運行時及開發依賴庫
+          sudo dpkg --add-architecture i386
+          sudo apt update
+          sudo apt install -y -qq libc6-i386 lib32z1 lib32stdc++6 lib32ncurses6 lib32z1-dev zlib1g:i386
+        shell: bash
+        
+      # -----------------------------------------------------------
+      # 步驟 1: 下載並設定 MIPS 交叉編譯器
+      # -----------------------------------------------------------
+      - name: ⬇️ 下載並設定 MIPS 交叉編譯器 (OpenWrt SDK)
+        id: toolchain_setup
+        run: |
+          TOOLCHAIN_VERSION="23.05.2"  
+          TOOLCHAIN_FILENAME="openwrt-sdk-${TOOLCHAIN_VERSION}-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+          
+          # SDK 下載及解壓重試邏輯 (使用 wget)
+          MAX_RETRIES=2
+          RETRY_COUNT=0
+          SDK_DOWNLOAD_URL="https://downloads.openwrt.org/releases/${TOOLCHAIN_VERSION}/targets/ramips/mt7621/${TOOLCHAIN_FILENAME}"
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              echo "嘗試下載 OpenWrt SDK (第 $((RETRY_COUNT + 1)) 次)..."
+              wget "$SDK_DOWNLOAD_URL" -O sdk.tar.xz
+              
+              echo "解壓工具鏈..."
+              mkdir -p sdk
+              if tar -Jxf sdk.tar.xz -C sdk --strip-components=1; then
+                  echo "SDK 解壓成功。"
+                  break
+              else
+                  RETRY_COUNT=$((RETRY_COUNT + 1))
+                  if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+                      echo "::error::錯誤：SDK 下載及解壓在 ${MAX_RETRIES} 次嘗試後仍失敗。"
+                      exit 1
+                  fi
+                  echo "::warning::警告：解壓失敗。清理並重試..."
+                  rm -rf sdk sdk.tar.xz  
+              fi
+          done
+
+          # 尋找 Toolchain 目錄
+          TOOLCHAIN_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "toolchain-*" | head -n 1)
+          if [ -z "$TOOLCHAIN_DIR" ]; then echo "::error::錯誤：找不到 Toolchain 目錄。"; exit 1; fi
+
+          # 尋找編譯器絕對路徑
+          TOOLCHAIN_COMPILER_PATH=$(find ${TOOLCHAIN_DIR}/bin -type f -name "*gcc" | head -n 1)
+          if [ -z "$TOOLCHAIN_COMPILER_PATH" ]; then echo "::error::錯誤：找不到編譯器。"; exit 1; fi
+
+          TOOLCHAIN_PREFIX=$(basename "$TOOLCHAIN_COMPILER_PATH" | sed 's/gcc$//')
+          
+          # 尋找 STAGING_DIR (Target Sysroot)
+          STAGING_DIR=$(find sdk/staging_dir -maxdepth 1 -type d -name "target-*" | head -n 1)
+          if [ -z "$STAGING_DIR" ]; then echo "::error::錯誤：找不到 Target Staging Directory (在 sdk/staging_dir 內)。"; exit 1; fi
+          
+          echo "CROSS_COMPILE=$TOOLCHAIN_PREFIX" >> $GITHUB_ENV
+          echo "CC_FULL_PATH=$TOOLCHAIN_COMPILER_PATH" >> $GITHUB_ENV
+          echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
+          echo "IPROUTE2_VERSION_LATEST=6.17.0" >> $GITHUB_ENV  
+          echo "IPROUTE2_VERSION_FALLBACK=6.8.0" >> $GITHUB_ENV
+          echo "TC_STATIC_PATH=${{ github.workspace }}/tc_static_bin" >> $GITHUB_ENV
+          
+        shell: bash
+
+      # -----------------------------------------------------------
+      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制 GCC Sysroot 和最大化 Autoconf 覆蓋)
+      # -----------------------------------------------------------
+      - name: ⚙️ Pre-compile and Install libmnl (最終修正)
+        run: |
+          # --- 變數定義與準備 ---
+          VERSION_TARGET="1.2.7"  
+          URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
+          LIBMNL_REPO="https://git.netfilter.org/libmnl.git"
+          CLONE_DIR="libmnl-source"
+
+          HOST_TRIPLE=$(basename "${{ env.CC_FULL_PATH }}" | sed 's/gcc$//' | sed 's/[-]$//')
+          BUILD_TRIPLE=$(/usr/share/misc/config.guess)
+
+          BUILD_DIR=""
+
+          # 🚨 關鍵修正：將 --sysroot 旗標加入 CC 變數中，強制 Autoconf 鏈接 OpenWrt 的庫
+          export CC="${{ env.CC_FULL_PATH }} --sysroot=${{ env.STAGING_DIR }}"
+          export CC_FOR_BUILD="/usr/bin/gcc"  
+          export CFLAGS="-Os -pipe -I${{ env.STAGING_DIR }}/usr/include"
+          export LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib"
+
+          echo "嘗試下載 libmnl-v${VERSION_TARGET}..."
+          # --- 下載與 Git 備援邏輯 ---
+          if curl -L --fail "${URL_TARGET}" -o "libmnl-target.tar.xz"; then
+              echo "成功下載 libmnl-v${VERSION_TARGET}。"
+              tar -xf "libmnl-target.tar.xz"
+              BUILD_DIR="libmnl-${VERSION_TARGET}"
+          elif git clone --depth 1 "${LIBMNL_REPO}" "${CLONE_DIR}"; then
+              echo "下載失敗，使用 Git 倉庫備援。"
+              BUILD_DIR="${CLONE_DIR}"
+              cd "${BUILD_DIR}"
+              # 如果是 Git 源碼，需要先執行 autogen.sh
+              ./autogen.sh || { echo "::error::autogen.sh 失敗。"; exit 1; }
+              cd ..
+          else
+              echo "::error::錯誤：libmnl 下載嘗試均失敗。請檢查 ${URL_TARGET} 是否可訪問，以及 Git 倉庫是否有效。" 
+              exit 1
+          fi
+
+          if [ -z "$BUILD_DIR" ]; then echo "::error::錯誤：無法確定 libmnl 構建目錄。"; exit 1; fi
+          
+          # 進入構建目錄
+          cd "${BUILD_DIR}"
+
+          # 🚨 最大化覆蓋：確保 Autoconf 認為編譯器和程式都可以成功運行
+          AUTOCONF_OVERRIDES="ac_cv_prog_cc_works=yes ac_cv_c_compiler_runs=yes ac_cv_prog_cc_c_o=yes ac_cv_prog_cc_fast_install=yes ac_cv_prog_ld_target=yes ac_cv_c_compiler_gnu=yes ac_cv_prog_cc_cross=yes ac_cv_prog_cc_cross_compile=yes ac_cv_search_mnl_socket_open=yes ac_cv_sizeof_int=4 ac_cv_sizeof_long=4 ac_cv_sizeof_void_p=4"
+
+          echo "執行 configure (使用強制環境變數繞過測試)..."
+          
+          # 執行 configure，使用 env 命令同時設定所有 Autoconf 覆蓋變數
+          env $AUTOCONF_OVERRIDES \
+          ./configure --host=$HOST_TRIPLE \
+                      --build=$BUILD_TRIPLE \
+                      --prefix=/usr \
+                      --disable-shared \
+                      --enable-static \
+                      --with-sysroot="${{ env.STAGING_DIR }}" || { echo "::error::libmnl configure 失敗。"; exit 1; }
+          
+          make || { echo "::error::libmnl make 失敗。"; exit 1; }
+          # 使用 DESTDIR 安裝到 staging 目錄
+          make install DESTDIR="${{ env.STAGING_DIR }}" || { echo "::error::libmnl install 失敗。"; exit 1; }
+          
+          cd ..
+        shell: bash
+
+      # -----------------------------------------------------------
+      # 步驟 2: 靜態編譯 TC (iproute2)
+      # -----------------------------------------------------------
+      - name: Download and Statically Compile TC
+        run: |
+          LATEST_VERSION="${{ env.IPROUTE2_VERSION_LATEST }}"
+          FALLBACK_VERSION="${{ env.IPROUTE2_VERSION_FALLBACK }}"
+          VERSION_TO_USE=""
+          ARCHIVE_SUFFIX=""
+          BASE_URL="https://www.kernel.org/pub/linux/utils/net/iproute2/"
+          # AR 工具路徑 (用於靜態編譯)
+          AR_FULL_PATH=$(echo "${{ env.CC_FULL_PATH }}" | sed 's/gcc$/ar/')
+
+          # 函數：嘗試下載 iproute2
+          try_download() {
+              local version=$1
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.xz"; then
+                  VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.xz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX}) - 優先使用。"; return 0
+              fi
+              if wget -nv "${BASE_URL}iproute2-${version}.tar.gz"; then
+                  VERSION_TO_USE="${version}"; ARCHIVE_SUFFIX=".tar.gz"; echo "已找到版本 ${version} (${ARCHIVE_SUFFIX})。" ; return 0
+              fi
+              return 1
+          }
+
+          # 執行下載
+          echo "嘗試下載最新版本 iproute2-${LATEST_VERSION}..."
+          if ! try_download "${LATEST_VERSION}"; then
+              echo "::warning::警告：最新版本 ${LATEST_VERSION} 無法下載。嘗試回退到 ${FALLBACK_VERSION} 版本。"
+              if ! try_download "${FALLBACK_VERSION}"; then
+                  echo "::error::錯誤：iproute2 下載失敗。" ; exit 1
+              fi
+          fi
+
+          # 解壓
+          tar -xf iproute2-${VERSION_TO_USE}${ARCHIVE_SUFFIX}
+          cd iproute2-${VERSION_TO_USE}
+
+          # 靜態交叉編譯 tc：直接覆蓋 Makefile 變數
+          make CC="${{ env.CC_FULL_PATH }} --sysroot=${{ env.STAGING_DIR }}" \
+               LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib -lmnl" \
+               CFLAGS="-I${{ env.STAGING_DIR }}/usr/include" \
+               AR="${AR_FULL_PATH}" \
+               SUBDIRS=tc || { echo "::error::tc make 失敗。"; exit 1; }
+          
+          mkdir -p ${{ env.TC_STATIC_PATH }}
+          # 檢查 tc 執行檔是否成功生成
+          if [ ! -f "tc/tc" ]; then
+            echo "::error::錯誤：tc/tc 執行檔未成功生成，靜態編譯失敗。"
+            exit 1
+          fi
+          
+          cp tc/tc ${{ env.TC_STATIC_PATH }}/tc_static_mipsel
+          
+          echo "IPROUTE2_VERSION=${VERSION_TO_USE}" >> $GITHUB_ENV
+
+        shell: bash
 
       # -----------------------------------------------------------
       # 步驟 3: 上傳靜態 TC Binary 作為 Artifact
