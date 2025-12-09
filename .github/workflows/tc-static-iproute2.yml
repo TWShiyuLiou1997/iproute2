@@ -104,14 +104,16 @@ jobs:
         shell: bash
 
       # -----------------------------------------------------------
-      # 步驟 1.5: 靜態交叉編譯 libmnl (最終修正：強制 GCC Sysroot 和最大化 Autoconf 覆蓋)
+      # 步驟 1.5: 靜態交叉編譯 libmnl (已增強下載穩定性)
       # -----------------------------------------------------------
-      - name: ⚙️ Pre-compile and Install libmnl (最終修正)
+      - name: ⚙️ Pre-compile and Install libmnl (增強穩定性)
         run: |
           # --- 變數定義與準備 ---
           VERSION_TARGET="1.2.7"  
-          URL_TARGET="https://netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz"
-          LIBMNL_REPO="https://git.netfilter.org/libmnl.git"
+          # 修正/確認官方 URL，使用更穩定的路徑
+          URL_TARGET="https://www.netfilter.org/projects/libmnl/files/libmnl-${VERSION_TARGET}.tar.xz" 
+          LIBMNL_REPO_OFFICIAL="https://git.netfilter.org/libmnl.git"
+          LIBMNL_REPO_GITHUB="https://github.com/libmnl/libmnl.git" # 新增 GitHub 鏡像備援
           CLONE_DIR="libmnl-source"
 
           HOST_TRIPLE=$(basename "${{ env.CC_FULL_PATH }}" | sed 's/gcc$//' | sed 's/[-]$//')
@@ -126,28 +128,40 @@ jobs:
           export LDFLAGS="-static -L${{ env.STAGING_DIR }}/usr/lib"
 
           echo "嘗試下載 libmnl-v${VERSION_TARGET}..."
-          # --- 下載與 Git 備援邏輯 ---
+          
+          # --- 嘗試 1: 官方 URL 下載 (處理 404) ---
           if curl -L --fail "${URL_TARGET}" -o "libmnl-target.tar.xz"; then
-              echo "成功下載 libmnl-v${VERSION_TARGET}。"
+              echo "成功下載 libmnl-v${VERSION_TARGET} (官方 URL)。"
               tar -xf "libmnl-target.tar.xz"
               BUILD_DIR="libmnl-${VERSION_TARGET}"
-          elif git clone --depth 1 "${LIBMNL_REPO}" "${CLONE_DIR}"; then
-              echo "下載失敗，使用 Git 倉庫備援。"
+              
+          # --- 嘗試 2: 官方 Git 倉庫備援 (處理官方下載點不可用) ---
+          elif git clone --depth 1 "${LIBMNL_REPO_OFFICIAL}" "${CLONE_DIR}"; then
+              echo "下載失敗，使用 Netfilter 官方 Git 倉庫備援。"
               BUILD_DIR="${CLONE_DIR}"
-              cd "${BUILD_DIR}"
-              # 如果是 Git 源碼，需要先執行 autogen.sh
-              ./autogen.sh || { echo "::error::autogen.sh 失敗。"; exit 1; }
-              cd ..
+
+          # --- 嘗試 3: GitHub 鏡像備援 (處理官方 Git 連線失敗) ---
+          elif git clone --depth 1 "${LIBMNL_REPO_GITHUB}" "${CLONE_DIR}"; then
+              echo "Netfilter Git 連線失敗，使用 GitHub 鏡像備援。"
+              BUILD_DIR="${CLONE_DIR}"
+              
           else
-              echo "::error::錯誤：libmnl 下載嘗試均失敗。請檢查 ${URL_TARGET} 是否可訪問，以及 Git 倉庫是否有效。" 
+              echo "::error::錯誤：libmnl 下載嘗試均失敗。請檢查資源是否可訪問。" 
               exit 1
           fi
 
           if [ -z "$BUILD_DIR" ]; then echo "::error::錯誤：無法確定 libmnl 構建目錄。"; exit 1; fi
           
+          # 如果是 Git 源碼，需要先執行 autogen.sh
+          if [ "$BUILD_DIR" = "${CLONE_DIR}" ]; then
+              cd "${BUILD_DIR}"
+              ./autogen.sh || { echo "::error::autogen.sh 失敗。"; exit 1; }
+              cd ..
+          fi
+
           # 進入構建目錄
           cd "${BUILD_DIR}"
-
+          
           # 🚨 最大化覆蓋：確保 Autoconf 認為編譯器和程式都可以成功運行
           AUTOCONF_OVERRIDES="ac_cv_prog_cc_works=yes ac_cv_c_compiler_runs=yes ac_cv_prog_cc_c_o=yes ac_cv_prog_cc_fast_install=yes ac_cv_prog_ld_target=yes ac_cv_c_compiler_gnu=yes ac_cv_prog_cc_cross=yes ac_cv_prog_cc_cross_compile=yes ac_cv_search_mnl_socket_open=yes ac_cv_sizeof_int=4 ac_cv_sizeof_long=4 ac_cv_sizeof_void_p=4"
 
